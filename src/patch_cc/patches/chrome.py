@@ -16,25 +16,34 @@ from .base import (
 
 # ---------------------------------------------------------- spinner tips
 
-_SPINNER_GUARD = compile_js(rf"if\({IDENT}\(\)\.spinnerTipsEnabled===!1\)return;")
+_SPINNER_GUARD = compile_js(
+    rf"if\({IDENT}\(\)\.spinnerTipsEnabled===!1\)(?:\{{return;?\}}|return;)"
+)
 _SPINNER_EXPR = compile_js(rf"{IDENT}\.spinnerTipsEnabled!==!1")
 
 
 def _disable_spinner_tips(content: str, _options: Options, outcome: Outcome) -> str:
-    """Force spinner tips off through both code paths that can enable them."""
+    """Force spinner tips off through both code paths that can enable them.
+
+    Each path counts its candidates from the *setting name*, not from its own
+    regex. Counting matches would make "upstream reshaped this path" identical
+    to "this build hasn't got it" -- both zero, both silently absent, while the
+    other path lands and carries the patch to green with tips still showing.
+    Off the setting, a drifted path is `candidates > 0, applied == 0`: a miss.
+    """
     guard = outcome.step("guard")
+    guard.candidates = content.count("spinnerTipsEnabled===!1")
 
     def kill_guard(_match: re.Match[str]) -> str:
-        guard.candidates += 1
         guard.applied += 1
         return "if(!0)return;"
 
     output = _SPINNER_GUARD.sub(kill_guard, content)
 
     expr = outcome.step("expr")
+    expr.candidates = output.count("spinnerTipsEnabled!==!1")
 
     def kill_expr(_match: re.Match[str]) -> str:
-        expr.candidates += 1
         expr.applied += 1
         return "!1"
 
@@ -166,6 +175,7 @@ PATCHES = [
         summary="Stop the loading spinner from showing rotating tips.",
         group=GROUP_CHROME,
         fn=_disable_spinner_tips,
+        default=False,
         anchors=("spinnerTipsEnabled",),
     ),
     Patch(

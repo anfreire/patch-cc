@@ -41,7 +41,9 @@ shape that already absorbs every case, found rather than bolted on.
 - **Report absent apart from broken.** A matcher that finds nothing may be a
   shape this build simply lacks — most patches carry several — not a regression.
   Keep "gone", "already applied", and "not on this build" as distinct signals;
-  never collapse them into one number.
+  never collapse them into one number. Which one a sub-step's silence means is
+  not guesswork: declare it (`expect=True`, or a variant group) so a green tick
+  cannot cover a dead feature. See [PLAYBOOK.md](PLAYBOOK.md).
 
 - **Port faithfully.** When you change a patch, verify its output against the
   upstream reference on a real bundle — byte-identical where behaviour must not

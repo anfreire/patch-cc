@@ -10,6 +10,12 @@ here. Two structural choices follow from that:
 2. Steps share discovered identifiers through :class:`Discovery` rather than
    re-deriving them, and every step tolerates its own failure so one drifted
    shape does not take the rest down with it.
+
+Tolerating failure is not the same as ignoring it: the steps the feature cannot
+live without are marked *required*, and the three reducer shapes form a group of
+which at least one must land. Everything else -- the legacy cleanups upstream has
+since dropped -- stays optional, so `doctor` distinguishes "this build lacks that
+shape" from "live thinking is dead".
 """
 
 from __future__ import annotations
@@ -18,6 +24,31 @@ import re
 from dataclasses import dataclass
 
 from .base import GROUP_LIVE, IDENT, Options, Outcome, Patch, compile_js, splice
+
+#: The mutually-exclusive reducer variants. On any one build one of them lands;
+#: none landing means upstream shipped a fourth shape and live thinking is dead.
+REDUCER = "reducer"
+
+#: The two rewrites that *are* live thinking: one creates the virtual message
+#: when a thinking block opens, the other appends each delta to it. Recognising
+#: a reducer proves nothing on its own -- a variant whose incidental rewrites
+#: (threading the setter, clearing state on message_stop) landed while these two
+#: drifted reports plenty of hits and streams nothing. Each is checked by the
+#: marker its own builder emits, so the test is "did the state update reach the
+#: bundle", not "did some literal match".
+_CORE_UPDATES = (
+    ("block-start", "__cc_streamingThinkingMessage="),
+    ("thinking-delta", "__cc_nextStreamingThinkingDelta"),
+)
+
+
+def _record_core_updates(segment: str, outcome: Outcome) -> None:
+    """Credit the core state updates found in a rewritten reducer body."""
+    for name, marker in _CORE_UPDATES:
+        if marker in segment:
+            step = outcome.step(name, expect=True)
+            step.candidates += 1
+            step.applied += 1
 
 
 @dataclass(slots=True)
@@ -124,6 +155,14 @@ def _step_memo_cache(content: str, outcome: Outcome) -> str:
 
 # ------------------------------------------------------------------- step 2
 
+#: How far back the state back-scan looks for the setter's ``useState(null)``.
+#: Deliberately *not* widened past the worst observed reach (35k on 2.1.217) by
+#: much: minified setter names repeat across scopes, so a wider window trades a
+#: loud discovery failure -- `prop-threading` is required, so it stops the patch
+#: -- for the chance of silently binding an unrelated same-named state. The step
+#: notes the distance actually reached, which is the early warning instead.
+_DISCOVER_WINDOW = 50_000
+
 _HIDE_PAST = compile_js(rf"hidePastThinking:!0,streamingThinking:({IDENT})")
 _ON_STREAMING = compile_js(rf"onStreamingThinking:({IDENT})")
 _CREATE_ELEMENT_CALL = compile_js(rf"createElement\(({IDENT}),\{{([^{{}}]*?)\}}\)")
@@ -147,19 +186,20 @@ def _discover_streaming_var(content: str, found: Discovery, outcome: Outcome) ->
 
     2.1.216 no longer ships `hidePastThinking`, so the primary anchor is already
     dead and we rely on the `onStreamingThinking` -> `useState(null)` back-scan.
-    Losing that fallback too would leave this patch with nothing.
+    Losing that fallback too would leave this patch with nothing, so the scan
+    records how far back it had to reach: that distance against
+    :data:`_DISCOVER_WINDOW` is the warning that the next hoist will break it.
     """
     primary = _HIDE_PAST.search(content)
     if primary:
         found.streaming_var = primary.group(1)
         return
 
-    outcome.step("discover").note(
-        "hidePastThinking anchor gone; using useState back-scan"
-    )
+    step = outcome.step("discover")
+    step.note("hidePastThinking anchor gone; using useState back-scan")
     for match in _ON_STREAMING.finditer(content):
         setter = match.group(1)
-        start = max(0, match.start() - 50_000)
+        start = max(0, match.start() - _DISCOVER_WINDOW)
         window = content[start : match.start()]
         state = compile_js(
             rf"\[({IDENT}),{re.escape(setter)}\]={IDENT}\.useState\(null\)"
@@ -167,12 +207,22 @@ def _discover_streaming_var(content: str, found: Discovery, outcome: Outcome) ->
         candidates = list(state.finditer(window))
         if candidates:
             found.streaming_var = candidates[-1].group(1)
+            reach = len(window) - candidates[-1].start()
+            step.note(f"resolved {reach:,} chars back of {_DISCOVER_WINDOW:,}")
+            if len(candidates) > 1:
+                # Nearest wins, which is a guess the moment there is more than
+                # one. Both shipped builds have exactly one state destructured
+                # to this setter in the *whole* bundle; a second would mean the
+                # pairing by setter name has stopped being an identification.
+                step.note(
+                    f"{len(candidates)} states share this setter; took the nearest"
+                )
             return
 
 
 def _step_prop_threading(content: str, found: Discovery, outcome: Outcome) -> str:
     """Pass the live-thinking state into the renderers that need it."""
-    step = outcome.step("prop-threading")
+    step = outcome.step("prop-threading", expect=True)
     if found.streaming_var is None:
         step.note("no streaming state variable found; skipped")
         return content
@@ -249,7 +299,7 @@ def _step_display_mode(content: str, outcome: Outcome) -> str:
     only requests summaries when the `showThinkingSummaries` setting is on;
     default it on instead.
     """
-    step = outcome.step("display-mode")
+    step = outcome.step("display-mode", expect=True)
 
     def rewrite(match: re.Match[str]) -> str:
         enabled, config, env_helper, display, request = match.groups()
@@ -280,11 +330,15 @@ def _step_display_mode(content: str, outcome: Outcome) -> str:
 
 # ------------------------------------------------------------------- step 4
 
+# The braces around the guarded call are optional *as a pair*: a bare `\}?` tail
+# would happily eat the enclosing block's closing brace on the unbraced shape and
+# the rewrite -- which emits its own -- would not put it back. Hence the
+# conditional: consume the closing brace only if the opening one was there.
 _ASSISTANT_THINKING = compile_js(
     rf"let ({IDENT})=({IDENT})\.message\.content\.find\(\(({IDENT})\)=>"
-    rf'\3\.type==="thinking"\);if\(\1&&\1\.type==="thinking"\)({IDENT})'
+    rf'\3\.type==="thinking"\);if\(\1&&\1\.type==="thinking"\)(\{{)?({IDENT})'
     rf"\?\.\(\(\)=>\(\{{thinking:\1\.thinking,isStreaming:!1,"
-    rf"streamingEndedAt:Date\.now\(\)\}}\)\)"
+    rf"streamingEndedAt:Date\.now\(\)\}}\)\)(?(4)\}})"
 )
 
 
@@ -293,7 +347,7 @@ def _step_final_summary(content: str, outcome: Outcome) -> str:
     step = outcome.step("final-summary")
 
     def rewrite(match: re.Match[str]) -> str:
-        block, message, item, setter = match.groups()
+        block, message, item, _brace, setter = match.groups()
         step.candidates += 1
         step.applied += 1
         return (
@@ -407,7 +461,7 @@ _TRANSCRIPT_VAR = compile_js(
 
 def _step_transcript_signature(content: str, found: Discovery, outcome: Outcome) -> str:
     """Make sure the transcript renderer actually receives the live state."""
-    step = outcome.step("transcript-signature")
+    step = outcome.step("transcript-signature", expect=True)
 
     helpers = _TOOLUSE_HELPERS.search(content)
     if helpers:
@@ -451,7 +505,7 @@ _INLINE_EXTRAS = compile_js(
 
 def _step_inline_extras(content: str, found: Discovery, outcome: Outcome) -> str:
     """Render live thinking inline, ordered with streaming tool-use blocks."""
-    step = outcome.step("inline-extras")
+    step = outcome.step("inline-extras", expect=True)
     if not found.transcript_var:
         step.note("no transcript streaming variable; skipped")
         return content
@@ -711,7 +765,7 @@ def _handler_is_stream_reducer(segment: str) -> bool:
 
 def _step_reducer_destructured(content: str, found: Discovery, outcome: Outcome) -> str:
     """2.1.138+ shape: options bag that already destructures onStreamingThinking."""
-    step = outcome.step("reducer-destructured")
+    step = outcome.step("reducer-destructured", expect=REDUCER)
     helper = found.create_message_helper
     if helper is None:
         step.note("no virtual-message helper discovered; skipped")
@@ -758,6 +812,7 @@ def _step_reducer_destructured(content: str, found: Discovery, outcome: Outcome)
         updated = _apply_pairs(segment, pairs, step)
         updated = _apply_progress_variants(updated, event, delta_body, step)
         if updated != segment:
+            _record_core_updates(updated, outcome)
             output = splice(output, match.start(), end, updated)
             pos = match.start() + len(updated)
     return output
@@ -765,7 +820,7 @@ def _step_reducer_destructured(content: str, found: Discovery, outcome: Outcome)
 
 def _step_reducer_inner(content: str, found: Discovery, outcome: Outcome) -> str:
     """2.1.183+ shape: inner handler that dropped onStreamingThinking."""
-    step = outcome.step("reducer-inner")
+    step = outcome.step("reducer-inner", expect=REDUCER)
     helper = found.create_message_helper
     if helper is None:
         step.note("no virtual-message helper discovered; skipped")
@@ -815,6 +870,7 @@ def _step_reducer_inner(content: str, found: Discovery, outcome: Outcome) -> str
         updated = _apply_pairs(segment, pairs, step)
         updated = _apply_progress_variants(updated, event, delta_body, step)
         if updated != segment:
+            _record_core_updates(updated, outcome)
             output = splice(output, match.start(), end, updated)
             pos = match.start() + len(updated)
     return output
@@ -822,7 +878,7 @@ def _step_reducer_inner(content: str, found: Discovery, outcome: Outcome) -> str
 
 def _step_reducer_legacy(content: str, found: Discovery, outcome: Outcome) -> str:
     """Pre-2.1.138 shape: positional parameters, no options bag."""
-    step = outcome.step("reducer-legacy")
+    step = outcome.step("reducer-legacy", expect=REDUCER)
     anchor = content.find(_LEGACY_ANCHOR)
     if anchor == -1:
         return content
@@ -877,7 +933,10 @@ def _step_reducer_legacy(content: str, found: Discovery, outcome: Outcome) -> st
         updated = _apply_progress_variants(
             updated, event, _delta(event, setter, helper) + ";", step
         )
-    return splice(content, start, end, updated) if updated != segment else content
+    if updated == segment:
+        return content
+    _record_core_updates(updated, outcome)
+    return splice(content, start, end, updated)
 
 
 # ------------------------------------------------------------------ assembly
@@ -885,6 +944,11 @@ def _step_reducer_legacy(content: str, found: Discovery, outcome: Outcome) -> st
 
 def _live_thinking(content: str, _options: Options, outcome: Outcome) -> str:
     found = Discovery()
+    # Declared before anything runs: an expectation that only comes into
+    # existence once its own rewrite succeeds can never report that rewrite
+    # missing -- which is exactly the silence being designed out here.
+    for name, _marker in _CORE_UPDATES:
+        outcome.step(name, expect=True)
     output = _step_memo_cache(content, outcome)
     _discover_streaming_var(output, found, outcome)
     output = _step_prop_threading(output, found, outcome)

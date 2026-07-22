@@ -25,15 +25,19 @@ _LIVE_PROMPT_MOUNT = compile_js(
     rf"({IDENT})&&({IDENT})&&({IDENT})\.createElement\(m,\{{marginBottom:1\}},"
     rf"\3\.createElement\(({IDENT}),\{{prompt:\2\}}\)\)"
 )
+# The negation is required, not optional: the rewrite emits `&&!prompt`, so on a
+# hypothetical un-negated shape it would invert the guard rather than relax it --
+# hiding the prompt in exactly the state this step exists to fix. A build that
+# ships that shape earns a branch; it must not be swept in by a loose `!?`.
 _EMPTY_STATE = compile_js(
-    rf"if\(({IDENT})\.length===0&&!?\(({IDENT})&&({IDENT})\)\)return"
+    rf"if\(({IDENT})\.length===0&&!\(({IDENT})&&({IDENT})\)\)return"
 )
 _TRANSCRIPT_MODE = compile_js(rf"isTranscriptMode:({IDENT})=!1")
 
 
 def _subagent_prompt(content: str, _options: Options, outcome: Outcome) -> str:
     """Show the subagent ``Prompt`` block outside transcript mode."""
-    gate = outcome.step("gate")
+    gate = outcome.step("gate", expect=True)
     output = content
     index = 0
 
@@ -94,7 +98,9 @@ def _subagent_prompt(content: str, _options: Options, outcome: Outcome) -> str:
 
     output = _LIVE_PROMPT_MOUNT.sub(rewrite_mount, output)
 
-    empty = outcome.step("empty-state")
+    # Independently load-bearing: with no rows yet, the untouched guard returns
+    # early and the prompt stays hidden however well the gate rewrite landed.
+    empty = outcome.step("empty-state", expect=True)
 
     def rewrite_empty(match: re.Match[str]) -> str:
         rows, _transcript, prompt_var = match.groups()
@@ -192,36 +198,72 @@ def discover_models(source: str) -> list[str]:
 # agent (Explore today), ignores the definition's model field in favour of its
 # own pin. Overriding that agent means neutralising this bypass so the
 # definition -- which we just rewrote -- is authoritative again.
+#
+# The helper's *head* -- the two-condition guard naming the pinned agent -- is
+# what identifies it, and it outlives its body: 2.1.217 grew a
+# CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP escape hatch in the middle while the
+# head stayed put. Resolving the pinned agent from the head alone is what keeps
+# a reshaped body loud: we still know an override is at stake, so the failed
+# rewrite is reported instead of vanishing with the agent's identity.
+_MODEL_BYPASS_HEAD = compile_js(
+    rf"function {IDENT}\(({IDENT}),{IDENT}\)\{{"
+    rf'if\(\1\.agentType!==({IDENT})\.agentType\|\|\1\.source!=="built-in"\)'
+    rf"(?:\{{return \1\.model\}}|return \1\.model;)"
+)
+
+# The whole helper, replaced wholesale. Upstream's guards between head and the
+# pin-or-inherit return are matched as opaque brace-free statements rather than
+# earning a branch each.
 _MODEL_BYPASS = compile_js(
     rf"function ({IDENT})\(({IDENT}),({IDENT})\)\{{"
-    rf'if\(\2\.agentType!==({IDENT})\.agentType\|\|\2\.source!=="built-in"\)return \2\.model;'
-    rf'return {IDENT}\(\3\)\?{IDENT}:"inherit"\}}'
+    rf'if\(\2\.agentType!==({IDENT})\.agentType\|\|\2\.source!=="built-in"\)'
+    rf"(?:\{{return \2\.model\}}|return \2\.model;)"
+    rf'[^{{}}]{{0,300}}?return {IDENT}\(\3\)\?{IDENT}:"inherit"\}}'
 )
 
 
-def bypassed_agent(source: str) -> str | None:
-    """Name of the agent whose definition the bypass helper overrides, if any."""
-    match = _MODEL_BYPASS.search(source)
-    if not match:
-        return None
-    def_var = re.escape(match.group(4))
-    assign = compile_js(rf'(?<![\w$]){def_var}=\{{agentType:"([\w-]+)"').search(source)
-    return assign.group(1) if assign else None
+def bypassed_agents(source: str) -> list[tuple[str, int]]:
+    """Every pinned agent a bypass helper overrides, with the helper's offset.
 
-
-def _neutralize_bypass(content: str, step: Outcome) -> str:
-    def rewrite(match: re.Match[str]) -> str:
-        step.candidates += 1
-        step.applied += 1
-        name, obj, model = match.group(1, 2, 3)
-        return f"function {name}({obj},{model}){{return {obj}.model}}"
-
-    output = _MODEL_BYPASS.sub(rewrite, content, count=1)
-    if step.candidates == 0:
-        step.note(
-            "model-bypass helper not found; the pinned agent may keep its own default"
+    Carrying the offset is what keeps identification and rewriting talking about
+    the *same* helper: matching the head here and then searching for a body
+    somewhere else could neutralise an unrelated helper and call it done.
+    """
+    found = []
+    for match in _MODEL_BYPASS_HEAD.finditer(source):
+        def_var = re.escape(match.group(2))
+        assign = compile_js(rf'(?<![\w$]){def_var}=\{{agentType:"([\w-]+)"').search(
+            source
         )
-    return output
+        if assign:
+            found.append((assign.group(1), match.start()))
+    return found
+
+
+def _neutralize_bypass(content: str, at: int, step: Outcome) -> str:
+    """Rewrite the bypass helper that starts at ``at`` so it obeys the definition.
+
+    The candidate is counted before the body is matched: the head already
+    proved a helper is here, so a body that fails to match is a drift to report
+    (``matched 1 but rewrote none``), not the absence the count would otherwise
+    claim.
+    """
+    step.candidates += 1
+    match = _MODEL_BYPASS.match(content, at)
+    if not match:
+        step.note(
+            "bypass helper found but its body drifted; the pinned agent would "
+            "ignore its override"
+        )
+        return content
+    step.applied += 1
+    name, obj, model = match.group(1, 2, 3)
+    return splice(
+        content,
+        match.start(),
+        match.end(),
+        f"function {name}({obj},{model}){{return {obj}.model}}",
+    )
 
 
 def _subagent_models(content: str, options: Options, outcome: Outcome) -> str:
@@ -261,9 +303,24 @@ def _subagent_models(content: str, options: Options, outcome: Outcome) -> str:
             )
         step.applied += 1
 
-    pinned = bypassed_agent(output)
-    if pinned is not None and pinned in options.subagent_models:
-        output = _neutralize_bypass(output, outcome.step("model-bypass"))
+    # Re-resolved after the definition rewrites above, so the offsets are live.
+    # Later helpers first: neutralising one changes the length of the source.
+    pinned_agents = bypassed_agents(output)
+    if not pinned_agents:
+        # No helper found means either upstream stopped pinning an agent or the
+        # head drifted -- and we cannot tell which, because the head is what
+        # names the agent. A drifted *body* is loud (the step below fails); this
+        # is the same failure one level up, where there is no step to fail, so
+        # the note is the only thing standing between a dead override and a
+        # green tick. It prints on every run, healthy ones included.
+        outcome.note(
+            "no model-bypass helper found; if this build still pins an agent, "
+            "its override is inert"
+        )
+    for pinned, at in reversed(pinned_agents):
+        if pinned in options.subagent_models:
+            step = outcome.step(f"bypass:{pinned}", expect=True)
+            output = _neutralize_bypass(output, at, step)
 
     return output
 
@@ -275,7 +332,6 @@ PATCHES = [
         summary="Show a subagent's Prompt block during normal use, not only in transcript mode.",
         group=GROUP_AGENTS,
         fn=_subagent_prompt,
-        default=False,
         anchors=('"Backgrounded agent"', 'action:"app:toggleTranscript"'),
     ),
     Patch(

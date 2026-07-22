@@ -6,7 +6,7 @@ subcommand so nothing needs the TUI:
     patch-cc apply [PATCH ...] [--brand [NAME]] [--model AGENT=MODEL]
                    [--suffix TEXT]
     patch-cc status
-    patch-cc doctor
+    patch-cc doctor [PATH]       # PATH: check any binary, e.g. an old backup
     patch-cc list
     patch-cc restore
     patch-cc extract PATH        # dump the JS bundle (debugging)
@@ -21,12 +21,15 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
+
+from rich.markup import escape
 
 from . import locate, patcher
-from .bun import BunError
-from .patches import Options, by_group, default_ids, derived_brand, ids
+from .bun import BunError, Bundle
+from .patches import Options, Outcome, by_group, default_ids, derived_brand, ids
 from .patches.agents import INHERIT, discover_agents, discover_models
-from .ui import console, err, heading, ok, warn
+from .ui import MARKS, console, err, findings, heading, ok, warn
 
 #: ``--brand`` with no value: derive the name from the system username.
 _DERIVE = ""
@@ -93,24 +96,19 @@ def _requested(args, source: str) -> tuple[list[str], Options]:
     return selected, options
 
 
+def _print_findings(outcome: Outcome) -> None:
+    """The detail under a patch line -- worded in :func:`ui.findings`."""
+    for style, text in findings(outcome):
+        console.print(f"      [{style}]· {text}[/{style}]")
+
+
 def _print_report(report: patcher.PatchReport) -> None:
     heading("Patch results")
     for patch, outcome in report.results:
-        missed = outcome.missed_steps()
-        if outcome.landed and not missed:
-            mark = "[green]✓[/green]"
-        elif outcome.landed:
-            mark = "[yellow]~[/yellow]"
-        else:
-            mark = "[red]✗[/red]"
+        mark, colour = MARKS[outcome.health]
         detail = f"  applied {outcome.applied}" if outcome.applied else ""
-        console.print(f"  {mark} {patch.title:28s}{detail}")
-        for name in missed:
-            console.print(
-                f"      [yellow]· sub-step matched but not applied:[/yellow] {name}"
-            )
-        for note in outcome.notes:
-            console.print(f"      [dim]· {note}[/dim]")
+        console.print(f"  [{colour}]{mark}[/{colour}] {patch.title:28s}{detail}")
+        _print_findings(outcome)
 
     if report.output is None:
         console.print()
@@ -132,7 +130,7 @@ def _print_report(report: patcher.PatchReport) -> None:
         console.print(f"  [dim]backup: {report.backup}[/dim]")
     if report.regressions:
         warn(
-            f"{len(report.regressions)} patch(es) matched nothing: "
+            f"{len(report.regressions)} patch(es) did not apply and were left out: "
             + ", ".join(p.id for p in report.regressions)
         )
         console.print("  [dim]Run `patch-cc doctor` for anchor details.[/dim]")
@@ -156,7 +154,7 @@ def cmd_apply(args) -> int:
     _print_report(report)
     if report.output is not None:
         console.print("\n[dim]Restart Claude Code for changes to take effect.[/dim]")
-    return 0 if report.output is not None else 1
+    return 0 if report.ok else 1
 
 
 def cmd_status(args) -> int:
@@ -197,54 +195,64 @@ def cmd_status(args) -> int:
     return 0
 
 
-def cmd_doctor(args) -> int:
-    from . import doctor
-    from .bun import container
+def _doctor_target(path: str | None) -> tuple[Bundle, str] | None:
+    """The clean bundle to test and how to label it, or ``None`` if there is none.
+
+    Matcher health is only meaningful against an unpatched bundle: our own edits
+    remove the very anchors the matchers look for. An explicit path is taken as
+    given -- that is how any kept backup becomes a regression corpus -- while the
+    installed binary falls back to its pristine copy when it is already patched.
+    """
+    from .bun import container  # noqa: PLC0415
+
+    if path is not None:
+        # A name the user typed is data, not markup: an unescaped `claude[old]`
+        # would have rich swallow the brackets as a style tag and report health
+        # against a file that is not the one being tested.
+        name = escape(Path(path).name)
+        bundle = container.read(path)
+        if patcher.is_patched(bundle.source):
+            warn(f"{name} is already patched; nothing clean to test.")
+            console.print("  [dim]Point doctor at a pristine binary or backup.[/dim]")
+            return None
+        return bundle, name
 
     install = locate.find_or_raise()
-    installed = container.read(str(install.binary))
+    bundle = container.read(str(install.binary))
+    label = f"Claude {install.version or '?'}"
+    if not patcher.is_patched(bundle.source):
+        return bundle, label
 
-    # Matcher health must be tested on a clean bundle. If the installed binary
-    # is already patched, our edits have removed the anchors, so fall back to
-    # the pristine backup.
-    test_bundle = installed
-    source_note = ""
-    if patcher.is_patched(installed.source):
-        clean = patcher.clean_source_path(install)
-        if clean is None:
-            warn("Installed binary is already patched and no clean backup exists.")
-            console.print(
-                "  [dim]Matcher health can't be checked against a patched binary. "
-                "Run `patch-cc restore`, or test a freshly downloaded binary.[/dim]"
-            )
-            return 1
-        test_bundle = container.read(str(clean))
-        source_note = (
-            "  [dim](installed binary is patched; testing against backup)[/dim]"
+    clean = patcher.clean_source_path(install)
+    if clean is None:
+        warn("Installed binary is already patched and no clean backup exists.")
+        console.print(
+            "  [dim]Matcher health can't be checked against a patched binary. "
+            "Run `patch-cc restore`, or test a freshly downloaded binary.[/dim]"
         )
+        return None
+    return container.read(str(clean)), (
+        f"{label}  [dim](installed binary is patched; testing against backup)[/dim]"
+    )
 
+
+def cmd_doctor(args) -> int:
+    from . import doctor
+
+    target = _doctor_target(args.path)
+    if target is None:
+        return 1
+    test_bundle, label = target
     result = doctor.dryrun(test_bundle)
 
-    heading(f"Patch health against Claude {install.version or '?'}{source_note}")
-    for check in result.checks:
-        outcome = check.outcome
-        missed = outcome.missed_steps()
-        if outcome.landed and not missed:
-            mark, colour = "✓", "green"
-        elif outcome.landed:
-            mark, colour = "~", "yellow"
-        else:
-            mark, colour = "✗", "red"
+    heading(f"Patch health against {label}")
+    for patch, outcome in result.results:
+        mark, colour = MARKS[outcome.health]
         console.print(
-            f"  [{colour}]{mark}[/{colour}] {check.patch.id:20s} "
+            f"  [{colour}]{mark}[/{colour}] {patch.id:20s} "
             f"cand={outcome.candidates} applied={outcome.applied}"
         )
-        for name in missed:
-            sub = outcome.steps[name]
-            console.print(
-                f"      [yellow]sub-step {name} missed[/yellow] "
-                f"{'· ' + '; '.join(sub.notes) if sub.notes else ''}"
-            )
+        _print_findings(outcome)
 
     agents = (
         ", ".join(f"{a.name}={a.effective_model}" for a in result.agents)
@@ -256,8 +264,8 @@ def cmd_doctor(args) -> int:
     if result.broken:
         console.print()
         warn(f"{len(result.broken)} patch(es) no longer match. Anchor counts:")
-        for check in result.broken:
-            anchors = result.anchors.get(check.patch.id, {})
+        for patch in result.broken:
+            anchors = result.anchors.get(patch.id, {})
             for anchor, count in anchors.items():
                 colour = "red" if count == 0 else "dim"
                 console.print(f"    [{colour}]{count:3d}[/{colour}]  {anchor}")
@@ -363,9 +371,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "status", help="show what is applied to the installed binary"
     ).set_defaults(func=cmd_status)
-    sub.add_parser(
+    p_doctor = sub.add_parser(
         "doctor", help="check every patch still matches this build"
-    ).set_defaults(func=cmd_doctor)
+    )
+    p_doctor.add_argument(
+        "path",
+        nargs="?",
+        help="binary to check (default: the installed one)",
+    )
+    p_doctor.set_defaults(func=cmd_doctor)
     sub.add_parser(
         "list", help="list patches, and the agents/models in your binary"
     ).set_defaults(func=cmd_list)
@@ -387,7 +401,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (FileNotFoundError, BunError) as exc:
+    except (OSError, BunError) as exc:
+        # Every path argument is a filesystem question, so the whole OSError
+        # family (missing, a directory, unreadable) is an answer to report --
+        # not a traceback. FileNotFoundError is one of them.
         err(str(exc))
         return 1
     except KeyboardInterrupt:

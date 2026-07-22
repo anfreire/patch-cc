@@ -45,31 +45,45 @@ class PatchReport:
 
     @property
     def landed_ids(self) -> list[str]:
-        return [p.id for p, o in self.results if o.landed]
+        """Exactly what the manifest may claim: every patch that is not broken.
+
+        A patch that rewrote something but missed an expectation is not an
+        applied patch; recording it would make ``status`` assert a feature that
+        is not there.
+        """
+        return [p.id for p, o in self.results if o.health != "broken"]
 
     @property
     def regressions(self) -> list[Patch]:
-        """Selected patches that were expected to change something but did not."""
-        return [p for p, o in self.results if not o.landed]
+        """Selected patches that did not land, or that missed an expectation."""
+        return [p for p, o in self.results if o.health == "broken"]
 
     @property
-    def partial(self) -> list[tuple[Patch, list[str]]]:
-        """Patches that landed but had some sub-step miss."""
-        out = []
-        for patch, outcome in self.results:
-            missed = outcome.missed_steps()
-            if outcome.landed and missed:
-                out.append((patch, missed))
-        return out
+    def ok(self) -> bool:
+        """Did this run write a binary carrying every selected patch, whole?
+
+        The exit code of both surfaces, in one place -- a broken patch is left
+        out of the binary, so a run that dropped one has not done what it was
+        asked and must not report success.
+        """
+        return self.output is not None and not self.regressions
 
 
 def build_manifest(landed: list[str], options: Options) -> str:
+    """Describe what is *in the binary* -- never what was merely asked for.
+
+    Each configurable value belongs to a patch, so it is recorded only when
+    that patch landed. Writing the brand while `branding` was dropped for
+    drifting would have `status` assert a name the bundle does not contain,
+    and re-applying from that manifest would keep asserting it.
+    """
+    applied = set(landed)
     payload: dict = {"v": 1, "tool": __version__, "patches": landed}
-    if options.rebrands:
+    if options.rebrands and "branding" in applied:
         payload["brand"] = options.brand
-    if options.version_suffix != DEFAULT_SUFFIX:
+    if options.version_suffix != DEFAULT_SUFFIX and "version-marker" in applied:
         payload["suffix"] = options.version_suffix
-    if options.subagent_models:
+    if options.subagent_models and "subagent-models" in applied:
         payload["models"] = options.subagent_models
     return "\n" + MANIFEST_PREFIX + json.dumps(payload, separators=(",", ":")) + "\n"
 
@@ -188,14 +202,29 @@ def patch_installation(
             "or reinstall Claude to get a clean binary."
         )
 
+    # A broken patch still rewrote *something*, and those orphan edits would ship
+    # unrecorded -- a feature half-present that the manifest cannot describe. So
+    # the run is redone without it. Redone *repeatedly*: patches see each other's
+    # output, so dropping one can change what the next finds, and only a whole
+    # run that comes back clean proves the set has settled. Judging the bytes of
+    # the last run by the verdicts of the first is how a manifest starts lying.
     patches = selected_patches(selected)
-    patched_source, results = run_patches(source.source, patches, options)
+    seen: dict[str, tuple[Patch, Outcome]] = {}
+    while True:
+        patched_source, results = run_patches(source.source, patches, options)
+        seen.update({p.id: (p, o) for p, o in results})
+        healthy = [p for p, o in results if o.health != "broken"]
+        if len(healthy) == len(patches):
+            break
+        patches = healthy
 
     report = PatchReport(
         version=install.version,
         kind=source.kind,
         original_size=source.binary_size,
-        results=results,
+        # Every patch reported by the last run it took part in: a dropped one
+        # keeps the outcome that condemned it, a survivor the run that shipped.
+        results=[seen[p.id] for p in selected_patches(list(seen))],
     )
 
     landed = report.landed_ids

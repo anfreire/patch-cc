@@ -49,7 +49,7 @@ from .patches import (
     derived_brand,
 )
 from .patches.agents import INHERIT, BuiltinAgent, discover_agents, discover_models
-from .ui import console, err
+from .ui import MARKS, console, err, findings
 
 if TYPE_CHECKING:
     from .doctor import DryRun, Status
@@ -767,7 +767,7 @@ class MenuApp:
                 return
             report, status = payload
             self.report = report
-            self.exit_code = 0 if report.output is not None else 1
+            self.exit_code = 0 if report.ok else 1
             if status is not None:
                 self.model.status = status
             self.view = "report"
@@ -1029,22 +1029,24 @@ class MenuApp:
         if report is None:
             return lines, None
         for patch, outcome in report.results:
-            missed = outcome.missed_steps()
-            if outcome.landed and not missed:
-                mark, style = "✓", "green"
-            elif outcome.landed:
-                mark, style = "~", "yellow"
-            else:
-                mark, style = "✗", "red"
+            mark, style = MARKS[outcome.health]
             line = Text()
             line.append(f"  {mark} ", style=style)
             line.append(f"{patch.title:<32}")
             line.append(f"{outcome.applied or '':>3}", style="dim")
             lines.append(line)
-            for name in missed:
-                lines.append(Text(f"      sub-step missed: {name}", style="yellow"))
+            lines += _findings(outcome)
 
         lines.append(Text(""))
+        if report.regressions:
+            # The crosses above say a patch failed; this says what became of it.
+            lines.append(
+                Text(
+                    f"  ! Left out of the binary: "
+                    f"{', '.join(p.id for p in report.regressions)}",
+                    style=_WARN,
+                )
+            )
         if report.output is None:
             line = Text()
             line.append("  ✗ ", style="red")
@@ -1068,28 +1070,27 @@ class MenuApp:
         result = self.doctor_result
         if result is None:
             return lines, None
-        for check in result.checks:
-            outcome = check.outcome
-            missed = outcome.missed_steps()
-            if outcome.landed and not missed:
-                mark, style = "✓", "green"
-            elif outcome.landed:
-                mark, style = "~", "yellow"
-            else:
-                mark, style = "✗", "red"
+        for patch, outcome in result.results:
+            mark, style = MARKS[outcome.health]
             line = Text()
             line.append(f"  {mark} ", style=style)
-            line.append(f"{check.patch.id:<22}")
+            line.append(f"{patch.id:<22}")
             line.append(
                 f"cand={outcome.candidates:<3} applied={outcome.applied}", style="dim"
             )
             lines.append(line)
+            lines += _findings(outcome)
         lines.append(Text(""))
         lines.append(
             Text(f"  agents  {', '.join(a.name for a in result.agents)}", style="dim")
         )
         lines.append(Text(f"  models  {', '.join(result.models)}", style="dim"))
         return lines, None
+
+
+def _findings(outcome) -> list[Text]:
+    """The same detail lines the CLI prints, drawn as panel rows."""
+    return [Text(f"      {text}", style=style) for style, text in findings(outcome)]
 
 
 def _center(text: Text, width: int) -> Text:

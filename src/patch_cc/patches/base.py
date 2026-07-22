@@ -90,15 +90,43 @@ class Outcome:
     notes: list[str] = field(default_factory=list)
     #: Named sub-steps, for patches built from several independent rewrites.
     steps: dict[str, "Outcome"] = field(default_factory=dict)
+    #: What this sub-step's absence means (set via :meth:`step`). ``False`` --
+    #: a shape some builds simply lack; ``True`` -- the patch is broken without
+    #: it; a string -- name of a group of which at least one member must land.
+    expect: bool | str = False
+    #: Set when the patch raised. A patch that threw half-way applied whatever
+    #: it had already done, so ``applied`` alone would read as success.
+    error: str | None = None
 
     @property
     def landed(self) -> bool:
         return self.applied > 0
 
+    @property
+    def health(self) -> str:
+        """``ok`` / ``partial`` / ``broken`` -- the one place that verdict lives.
+
+        Every surface (apply report, doctor, menu) renders this same judgement,
+        so none of them can disagree about whether a patch is fine.
+        """
+        if not self.landed or self.failures():
+            return "broken"
+        return "partial" if self.missed_steps() else "ok"
+
+    def failures(self) -> list[str]:
+        """Every reason this patch is broken, as sentences.
+
+        One list so no surface can render half of them: a patch that raised and
+        a patch that missed an expectation are the same verdict wearing
+        different clothes, and a reader who is shown only one of them draws the
+        wrong conclusion about the other.
+        """
+        return [*([self.error] if self.error else []), *self.unmet()]
+
     def note(self, message: str) -> None:
         self.notes.append(message)
 
-    def step(self, name: str) -> "Outcome":
+    def step(self, name: str, expect: bool | str = False) -> "Outcome":
         """Get (or create) a named sub-outcome.
 
         A single scalar count cannot distinguish "all twelve rewrites landed"
@@ -107,7 +135,10 @@ class Outcome:
         rewrite separately turns that into an actionable "reducer.message_stop
         missed".
         """
-        return self.steps.setdefault(name, Outcome())
+        sub = self.steps.setdefault(name, Outcome())
+        if expect and not sub.expect:
+            sub.expect = expect
+        return sub
 
     def finalize(self) -> "Outcome":
         """Roll sub-step totals up into this outcome."""
@@ -132,8 +163,48 @@ class Outcome:
         ]
 
     def absent_steps(self) -> list[str]:
-        """Sub-steps that matched nothing on this build (informational)."""
-        return [name for name, sub in self.steps.items() if sub.candidates == 0]
+        """Sub-steps that matched nothing on this build (informational).
+
+        Required steps are excluded: their absence is not information, it is a
+        regression, and :meth:`unmet` reports it as one.
+        """
+        return [
+            name
+            for name, sub in self.steps.items()
+            if sub.candidates == 0 and sub.expect is not True
+        ]
+
+    def unmet(self) -> list[str]:
+        """Expectations this run failed to meet -- each one a regression.
+
+        Absence alone cannot be judged step by step: a missing reducer variant
+        is routine while a missing group-routing rewrite silently kills the
+        whole patch. The ``expect`` marks make that judgement explicit -- a
+        required step must land, and each variant group must land at least one
+        member -- so "green but functionally dead" cannot happen.
+
+        Groups ask for *at least* one rather than exactly one: variants are
+        alternates in practice, but a transitional build carrying two reducers
+        would have both correctly patched, and that is no reason to cry wolf.
+        """
+        failures = []
+        groups: dict[str, list[str]] = {}
+        for name, sub in self.steps.items():
+            if sub.expect is True:
+                if not sub.landed:
+                    detail = (
+                        "found nothing"
+                        if sub.candidates == 0
+                        else f"matched {sub.candidates} but rewrote none"
+                    )
+                    failures.append(f"required step {name} {detail}")
+            elif isinstance(sub.expect, str):
+                groups.setdefault(sub.expect, []).append(name)
+
+        for label, names in groups.items():
+            if not any(self.steps[name].landed for name in names):
+                failures.append(f"no {label} variant landed (tried {', '.join(names)})")
+        return failures
 
 
 PatchFn = Callable[[str, Options, Outcome], str]
@@ -151,11 +222,18 @@ class Patch:
     anchors: tuple[str, ...] = ()
 
     def run(self, content: str, options: Options) -> tuple[str, Outcome]:
+        """Run this patch, surviving its own failure.
+
+        A raising patch keeps the *input* content -- its partial rewrites are
+        discarded with the return value -- but the counts it had already
+        recorded live on in ``outcome``, so the error is recorded explicitly
+        rather than left to be inferred from a number that says success.
+        """
         outcome = Outcome()
         try:
             content = self.fn(content, options, outcome)
         except Exception as exc:  # noqa: BLE001 - one bad patch must not abort the run
-            outcome.note(f"raised {type(exc).__name__}: {exc}")
+            outcome.error = f"raised {type(exc).__name__}: {exc}"
         return content, outcome.finalize()
 
 

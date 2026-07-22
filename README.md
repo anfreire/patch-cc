@@ -48,7 +48,8 @@ patch-cc                       # then just run it
 |---|---|---|
 | Output & diffs | Detailed tool calls | Show full read/search calls, not collapsed summaries |
 | | Colour new files as diffs | Created files render with `+` lines and green |
-| Thinking | Always show thinking | Thinking blocks stay inline — no `ctrl+o` |
+| Thinking | Opt out of server-side experiments | Some accounts land in one that empties every thinking block |
+| | Always show thinking | Thinking blocks stay inline — no `ctrl+o` |
 | Live thinking | Stream thinking live | See reasoning as it is generated, inline and in order |
 | Subagents | Show subagent prompts | Prompt blocks visible during normal use |
 | | Override subagent models | Pick the model per built-in agent (discovered from your binary) |
@@ -70,6 +71,7 @@ uvx patch-cc apply --model Explore=haiku --model general-purpose=opus
 uvx patch-cc apply --suffix "(mine)"          # custom --version marker
 uvx patch-cc status                           # exactly what is applied
 uvx patch-cc doctor                           # do all patches match this build?
+uvx patch-cc doctor path/to/claude            # ...or match some other binary
 uvx patch-cc list                             # patches + your binary's agents/models
 uvx patch-cc restore                          # put the original back
 ```

@@ -57,18 +57,10 @@ def status(bundle: Bundle) -> Status:
 
 
 @dataclass(slots=True)
-class PatchHealth:
-    patch: Patch
-    outcome: Outcome
-
-    @property
-    def ok(self) -> bool:
-        return self.outcome.landed
-
-
-@dataclass(slots=True)
 class DryRun:
-    checks: list[PatchHealth] = field(default_factory=list)
+    #: Shaped exactly like :attr:`PatchReport.results`, so every surface renders
+    #: a dry run and a real apply with the same loop.
+    results: list[tuple[Patch, Outcome]] = field(default_factory=list)
     anchors: dict[str, dict[str, int]] = field(default_factory=dict)
     #: What discovery found in this bundle -- the agents and model aliases the
     #: override patch would offer.
@@ -76,12 +68,15 @@ class DryRun:
     models: list[str] = field(default_factory=list)
 
     @property
-    def broken(self) -> list[PatchHealth]:
-        return [c for c in self.checks if not c.ok]
+    def broken(self) -> list[Patch]:
+        """Patches that failed, by :attr:`Outcome.health` and nothing else.
 
-    @property
-    def partial(self) -> list[PatchHealth]:
-        return [c for c in self.checks if c.ok and c.outcome.missed_steps()]
+        A second opinion on health here is how ``doctor`` once printed a red
+        cross and "all patches still match" in the same report: it judged on
+        counts alone, so a patch that raised half-way was red on its own line
+        and absent from this list.
+        """
+        return [p for p, o in self.results if o.health == "broken"]
 
 
 def _synthetic_options(agents: list[BuiltinAgent], models: list[str]) -> Options:
@@ -109,7 +104,7 @@ def dryrun(bundle: Bundle) -> DryRun:
 
     for patch in ALL_PATCHES:
         _, outcome = patch.run(source, options)
-        result.checks.append(PatchHealth(patch=patch, outcome=outcome))
+        result.results.append((patch, outcome))
         if patch.anchors:
             result.anchors[patch.id] = {a: source.count(a) for a in patch.anchors}
 
