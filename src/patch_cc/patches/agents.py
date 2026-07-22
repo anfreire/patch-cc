@@ -275,6 +275,7 @@ PATCHES = [
         summary="Show a subagent's Prompt block during normal use, not only in transcript mode.",
         group=GROUP_AGENTS,
         fn=_subagent_prompt,
+        default=False,
         anchors=('"Backgrounded agent"', 'action:"app:toggleTranscript"'),
     ),
     Patch(
