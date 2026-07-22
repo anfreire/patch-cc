@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+
+# uv
+.uv/
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Local artifacts
+*.orig
+*.patched
+content*.js
+claude-*.bin
