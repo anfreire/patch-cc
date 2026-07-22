@@ -906,7 +906,7 @@ class MenuApp:
         return seg_lines
 
     def _head(self, panel_width: int) -> list[Text]:
-        title = Text("✳ patch-cc ✳", style=f"bold {_ACCENT}")
+        title = Text("patch-cc", style=f"bold {_ACCENT}")
         return [
             Text(""),
             _center(title, panel_width),
