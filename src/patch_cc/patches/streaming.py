@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .base import GROUP_LIVE, IDENT, Options, Outcome, Patch, compile_js, splice
+from .base import GROUP_THINKING, IDENT, Options, Outcome, Patch, compile_js, splice
 
 #: The mutually-exclusive reducer variants. On any one build one of them lands;
 #: none landing means upstream shipped a fourth shape and live thinking is dead.
@@ -974,7 +974,7 @@ PATCHES = [
         title="Stream thinking live",
         summary="Show thinking as it is generated, inline and in order, instead of "
         "only after the turn finishes.",
-        group=GROUP_LIVE,
+        group=GROUP_THINKING,
         fn=_live_thinking,
         anchors=(
             "onStreamingThinking:",

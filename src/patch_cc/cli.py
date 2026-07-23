@@ -25,14 +25,62 @@ from pathlib import Path
 
 from rich.markup import escape
 
-from . import locate, patcher
+from . import cache, locate, patcher
 from .bun import BunError, Bundle
-from .patches import Options, Outcome, by_group, default_ids, derived_brand, ids
+from .patches import (
+    DEFAULT_SUFFIX,
+    GROUP_ORDER,
+    Options,
+    Outcome,
+    Patch,
+    by_group,
+    default_ids,
+    derived_brand,
+    ids,
+)
 from .patches.agents import INHERIT, discover_agents, discover_models
-from .ui import MARKS, console, err, findings, heading, ok, warn
+from .ui import MARKS, applied_value, console, err, findings, heading, ok, warn
 
 #: ``--brand`` with no value: derive the name from the system username.
 _DERIVE = ""
+
+
+def _enable_hint(patch: Patch) -> str:
+    """How a patch is turned on: blank for the default set, else how to opt in.
+
+    Reads the patch's own ``option``, so a non-default patch says exactly how it
+    is enabled -- ``subagent-models`` needs ``--model``, ``spinner-tips`` is just
+    named -- instead of the old blanket ``(via --model)`` that mislabelled every
+    off-by-default patch.
+    """
+    if patch.default:
+        return ""
+    if patch.option:
+        return f"(off by default; enable with {patch.option})"
+    return "(off by default; name it to apply)"
+
+
+def _list_hint(patch: Patch, cached: cache.Selection) -> str:
+    """Simple, binary-free hints for `list`: how to enable a patch, its default
+    configurable value, and the value your last interactive run cached where
+    that is meaningful. The dynamic agent/model catalog lives in `apply --help`.
+    """
+    parts: list[str] = []
+    if enable := _enable_hint(patch):
+        parts.append(enable.strip("()"))
+    opts = cached.options
+    if patch.id == "branding":
+        parts.append(f"default {derived_brand()!r}")
+        if opts.rebrands and "branding" in cached.patches:
+            parts.append(f"cached {opts.brand!r}")
+    elif patch.id == "version-marker":
+        parts.append(f"default {DEFAULT_SUFFIX!r}")
+        if opts.version_suffix != DEFAULT_SUFFIX:
+            parts.append(f"cached {opts.version_suffix!r}")
+    elif patch.id == "subagent-models" and opts.subagent_models:
+        picks = ", ".join(f"{a}={m}" for a, m in opts.subagent_models.items())
+        parts.append(f"cached {picks}")
+    return "  ·  ".join(parts)
 
 
 def _parse_models(specs: list[str], source: str) -> dict[str, str]:
@@ -96,17 +144,86 @@ def _requested(args, source: str) -> tuple[list[str], Options]:
     return selected, options
 
 
+def _has_selection_args(args) -> bool:
+    """Did the user pass an explicit selection (vs. bare `apply` = the defaults)?
+
+    Only an explicit pick is worth remembering: caching the default set would
+    clobber a previously remembered custom selection with nothing meaningful.
+    """
+    return bool(args.patches or args.brand is not None or args.model or args.suffix)
+
+
+def _valid_models(
+    models: dict[str, str], source: str
+) -> tuple[dict[str, str], list[str]]:
+    """Split cached overrides into those this binary still accepts and the rest.
+
+    A build can drop an agent or retire a model between the interactive apply
+    that cached the choice and a later ``--from-cache`` replay; those are skipped
+    with a warning rather than written blind, mirroring the menu's own check.
+    """
+    known_agents = {a.name for a in discover_agents(source)}
+    known_models = {INHERIT, *discover_models(source)}
+    valid: dict[str, str] = {}
+    dropped: list[str] = []
+    for agent, model in models.items():
+        if agent in known_agents and model in known_models:
+            valid[agent] = model
+        else:
+            dropped.append(f"{agent}={model}")
+    return valid, dropped
+
+
+def _from_cache(args, source: str) -> tuple[list[str], Options]:
+    """Rebuild the last interactive selection for a non-interactive apply.
+
+    The single place a persisted choice drives an action rather than pre-filling
+    the menu -- entered explicitly via ``--from-cache``, so the cache is a named
+    argument, not hidden state (see docs/CONDUCT.md). Model overrides are
+    re-validated against the binary in hand.
+    """
+    if args.patches or args.brand is not None or args.model or args.suffix:
+        err(
+            "--from-cache replays your last interactive selection; do not combine "
+            "it with patch ids or --brand / --model / --suffix."
+        )
+        raise SystemExit(2)
+    if not cache.cache_path().exists():
+        err(
+            "No cached selection yet. Apply once from the interactive menu "
+            "(run `patch-cc`), then `--from-cache` replays it."
+        )
+        raise SystemExit(2)
+
+    selection = cache.load()
+    options = selection.options
+    selected = list(selection.patches)
+    if options.subagent_models:
+        valid, dropped = _valid_models(options.subagent_models, source)
+        options.subagent_models = valid
+        if dropped:
+            warn(
+                "cached model override(s) not valid for this build, skipped: "
+                + ", ".join(dropped)
+            )
+        if not valid and "subagent-models" in selected:
+            selected.remove("subagent-models")
+    return selected, options
+
+
 def _print_findings(outcome: Outcome) -> None:
     """The detail under a patch line -- worded in :func:`ui.findings`."""
     for style, text in findings(outcome):
         console.print(f"      [{style}]· {text}[/{style}]")
 
 
-def _print_report(report: patcher.PatchReport) -> None:
+def _print_report(report: patcher.PatchReport, options: Options) -> None:
     heading("Patch results")
     for patch, outcome in report.results:
         mark, colour = MARKS[outcome.health]
         detail = f"  applied {outcome.applied}" if outcome.applied else ""
+        if outcome.applied and (value := applied_value(patch, options)):
+            detail += f"  [dim]→ {escape(value)}[/dim]"
         console.print(f"  [{colour}]{mark}[/{colour}] {patch.title:28s}{detail}")
         _print_findings(outcome)
 
@@ -139,9 +256,15 @@ def _print_report(report: patcher.PatchReport) -> None:
 def cmd_apply(args) -> int:
     install = locate.find_or_raise()
     bundle = patcher.read_pristine(install)
-    selected, options = _requested(args, bundle.source)
+    if args.from_cache:
+        selected, options = _from_cache(args, bundle.source)
+    else:
+        selected, options = _requested(args, bundle.source)
 
-    heading(f"Patching Claude {install.version or '?'} ({install.binary.name})")
+    version = install.version or "?"
+    name = install.binary.name
+    where = version if name == version else f"{version} ({name})"
+    heading(f"Patching Claude {where}")
     try:
         report = patcher.patch_installation(install, selected, options, bundle=bundle)
     except patcher.AlreadyPatchedError as exc:
@@ -151,8 +274,14 @@ def cmd_apply(args) -> int:
         err(str(exc))
         return 1
 
-    _print_report(report)
+    _print_report(report, options)
     if report.output is not None:
+        # Remember an explicit pick so `apply --from-cache` and the menu can
+        # replay it -- but never a bare `apply`, which would overwrite a
+        # remembered selection with the defaults. `--from-cache` never reaches
+        # here with selection args, so a replay does not re-cache itself.
+        if _has_selection_args(args):
+            cache.save(cache.Selection(patches=selected, options=options))
         console.print("\n[dim]Restart Claude Code for changes to take effect.[/dim]")
     return 0 if report.ok else 1
 
@@ -279,32 +408,25 @@ def cmd_doctor(args) -> int:
 
 
 def cmd_list(args) -> int:
+    """The quick catalog: id, description, simple hints. Registry + cache only --
+
+    no binary read, so it is fast and works anywhere. The dynamic agent/model
+    catalog and full usage live in `apply --help`.
+    """
     heading("Available patches")
+    console.print(
+        "  [dim]apply with `patch-cc apply <id>`; "
+        "see `apply --help` for flags, examples & your binary's agents/models[/dim]"
+    )
+    cached = cache.load()
     for group, patches in by_group().items():
         if not patches:
             continue
         console.print(f"\n[bold]{group}[/bold]")
         for patch in patches:
-            tag = "[dim](via --model)[/dim]" if not patch.default else ""
-            console.print(f"  [cyan]{patch.id:18s}[/cyan] {patch.summary} {tag}")
-
-    install = locate.find()
-    if install is None:
-        return 0
-    try:
-        source = patcher.read_pristine(install).source
-    except (BunError, OSError):
-        return 0
-    agents = discover_agents(source)
-    if agents:
-        console.print(f"\n[bold]Subagents in Claude {install.version or '?'}[/bold]")
-        for agent in agents:
-            console.print(
-                f"  [cyan]{agent.name:18s}[/cyan] default model: {agent.effective_model}"
-            )
-        console.print(
-            f"  [dim]models: {', '.join([INHERIT, *discover_models(source)])}[/dim]"
-        )
+            console.print(f"  [cyan]{patch.id:18s}[/cyan] {patch.summary}")
+            if hint := _list_hint(patch, cached):
+                console.print(f"  [dim]{'':18s} {hint}[/dim]")
     return 0
 
 
@@ -335,36 +457,182 @@ def cmd_menu(args) -> int:
     return run_menu()
 
 
+_MAIN_EPILOG = """\
+Run with no arguments to open the interactive menu.
+
+common tasks:
+  patch-cc apply          apply the default patch set to the installed binary
+  patch-cc apply --help   every patch id, the flags, and worked examples
+  patch-cc status         show exactly what is applied right now
+  patch-cc doctor         check every patch still matches this build
+  patch-cc list           describe every patch: ids, descriptions, hints
+  patch-cc restore        put the original binary back from backup
+"""
+
+
+def _discover_binary() -> tuple[str | None, str | None]:
+    """The installed binary's JS source and version, or ``(None, version?)``.
+
+    Best-effort: ``apply --help`` reads the real binary so its agent/model list
+    matches what ``--model`` accepts, but a missing or unreadable install just
+    drops the dynamic block instead of failing the help.
+    """
+    install = locate.find()
+    if install is None:
+        return None, None
+    try:
+        return patcher.read_pristine(install).source, install.version
+    except (BunError, OSError):
+        return None, install.version
+
+
+def _example_model(models: list[str], offset: int = 0) -> str:
+    """A concrete (non-inherit) model alias for a ``--model`` example."""
+    concrete = [m for m in models if m != INHERIT]
+    return concrete[offset % len(concrete)] if concrete else INHERIT
+
+
+def _apply_epilog() -> str:
+    """Build ``apply --help`` from the registry *and* the installed binary.
+
+    Nothing is hardcoded: the patch list and default markers come from the
+    registry, the subagent agents and models from the real binary. The binary
+    read is deferred to the help action, so only ``apply --help`` pays for it and
+    a missing install degrades to the static parts.
+    """
+    source, version = _discover_binary()
+    agents = discover_agents(source) if source else []
+    models = [INHERIT, *discover_models(source)] if source else []
+    grouped = by_group()
+
+    lines = ["patches  (name them to apply exactly those; * = the default set):", ""]
+    for group in GROUP_ORDER:
+        group_patches = grouped.get(group, [])
+        if not group_patches:
+            continue
+        lines.append(f"  {group}")
+        for patch in group_patches:
+            mark = "*" if patch.default else " "
+            hint = _enable_hint(patch)
+            row = f"    {mark} {patch.id:20s}{patch.title}"
+            lines.append(f"{row}   {hint}" if hint else row)
+        lines.append("")
+
+    lines += [
+        "naming ids replaces the default set with exactly what you name; the",
+        "flags below always add their own patch on top of whatever you named.",
+        "",
+        "configuring patches:",
+        f"  --brand [NAME]       selects branding  ·  no value -> {derived_brand()!r}",
+        f"  --suffix TEXT        selects version-marker  ·  default {DEFAULT_SUFFIX!r}",
+        "  --model AGENT=MODEL  selects subagent-models  ·  repeatable, one per agent",
+    ]
+    if agents:
+        lines += [
+            f"      agents (Claude {version or '?'}):  "
+            + "  ".join(a.name for a in agents),
+            "      models:  " + "  ".join(models),
+        ]
+    elif source is None:
+        lines.append(
+            "      (the agents/models list shows when a Claude install is present)"
+        )
+
+    ex_one = f"{agents[0].name}={_example_model(models)}" if agents else "Explore=haiku"
+    ex_two = f"{agents[1].name}={_example_model(models, 1)}" if len(agents) > 1 else ""
+
+    lines += [
+        "",
+        "examples:",
+        "  patch-cc apply",
+        "      the default set (the * patches above)",
+        "  patch-cc apply tool-calls live-thinking",
+        "      only these two; the default set is replaced",
+        "  patch-cc apply --brand",
+        f"      the default set, branded {derived_brand()!r}",
+        '  patch-cc apply --brand "Ada\'s Code" --suffix "(ada)"',
+        "      default set with an explicit startup name and version marker",
+        f"  patch-cc apply --model {ex_one}" + (f" --model {ex_two}" if ex_two else ""),
+        "      default set plus subagent model override" + ("s" if ex_two else ""),
+        "  patch-cc apply --from-cache",
+        "      re-apply your last interactive menu selection (saved by `patch-cc`)",
+    ]
+    return "\n".join(lines)
+
+
+class _ApplyHelpAction(argparse.Action):
+    """``apply -h/--help``: assemble the dynamic epilog, then print help.
+
+    Deferred here rather than at parser-build time so only ``apply --help`` reads
+    the binary -- every other ``patch-cc`` invocation stays fast and needs no
+    install.
+    """
+
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(
+            option_strings, dest, nargs=0, default=argparse.SUPPRESS, **kwargs
+        )
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.epilog = _apply_epilog()
+        parser.print_help()
+        parser.exit()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="patch-cc",
         description="Interactive patcher for the Claude Code native binary.",
+        epilog=_MAIN_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.set_defaults(func=cmd_menu)
     sub = parser.add_subparsers(dest="command")
 
-    p_apply = sub.add_parser("apply", help="apply patches to the installed binary")
+    p_apply = sub.add_parser(
+        "apply",
+        help="apply patches to the installed binary",
+        description="Apply patches to the installed Claude binary. Always starts "
+        "from a pristine copy, so re-applying replaces the previous set rather "
+        "than stacking on it.",
+        add_help=False,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_apply.add_argument(
+        "-h",
+        "--help",
+        action=_ApplyHelpAction,
+        help="show this help (reads the installed binary for its agents/models)",
+    )
     p_apply.add_argument(
         "patches",
         nargs="*",
         metavar="PATCH",
-        help="patch ids to apply (default: the default set)",
+        help="patch ids to apply (default: the default set; all ids listed below)",
+    )
+    p_apply.add_argument(
+        "--from-cache",
+        action="store_true",
+        help="re-apply your last interactive menu selection (ignores other args)",
     )
     p_apply.add_argument(
         "--brand",
         nargs="?",
         const=_DERIVE,
         metavar="NAME",
-        help="custom startup name (no value: <username>'s Code)",
+        help="startup name; selects `branding` (no value: <username>'s Code)",
     )
     p_apply.add_argument(
         "--model",
         action="append",
         metavar="AGENT=MODEL",
-        help="override a subagent's default model (repeatable)",
+        help="set a subagent's model; selects `subagent-models` (repeatable)",
     )
     p_apply.add_argument(
-        "--suffix", metavar="TEXT", help="--version marker text (default: (patched))"
+        "--suffix",
+        metavar="TEXT",
+        help="`claude --version` marker text; selects `version-marker` "
+        "(default: (patched))",
     )
     p_apply.set_defaults(func=cmd_apply)
 
@@ -381,7 +649,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_doctor.set_defaults(func=cmd_doctor)
     sub.add_parser(
-        "list", help="list patches, and the agents/models in your binary"
+        "list",
+        help="describe every patch + the subagent models your binary offers",
+        description="Describe every patch (what it does, whether it is on by "
+        "default, and how to enable it) plus the subagent models discovered in "
+        "your installed binary. For apply syntax and examples, see `apply --help`.",
     ).set_defaults(func=cmd_list)
     sub.add_parser(
         "restore", help="restore the original binary from backup"

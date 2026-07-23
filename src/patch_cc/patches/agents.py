@@ -341,6 +341,7 @@ PATCHES = [
         group=GROUP_AGENTS,
         fn=_subagent_models,
         default=False,
+        option="--model",
         anchors=('agentType:"', "Optional model override"),
     ),
 ]

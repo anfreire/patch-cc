@@ -33,7 +33,6 @@ SENTINEL = "__cc_"
 # Groups, in display order.
 GROUP_OUTPUT = "Output & diffs"
 GROUP_THINKING = "Thinking"
-GROUP_LIVE = "Live thinking (streaming)"
 GROUP_AGENTS = "Subagents"
 GROUP_CHROME = "Chrome & branding"
 
@@ -218,6 +217,11 @@ class Patch:
     group: str
     fn: PatchFn
     default: bool = True
+    #: The CLI flag that configures and auto-selects this patch (``--brand``,
+    #: ``--model``, ``--suffix``); ``None`` for patches selected only by id. The
+    #: single home for the patch<->flag coupling, so ``list`` and ``apply
+    #: --help`` can say how an opt-in patch is turned on rather than inferring it.
+    option: str | None = None
     #: Anchors to report on when this patch stops matching.
     anchors: tuple[str, ...] = ()
 

@@ -223,8 +223,9 @@ that broke a patch along with every note.
 
 ## Patch reference
 
-Grouped as in `patch-cc list`. Each entry: what it changes, the stable anchor,
-and where it lives.
+Grouped by source module — the UI folds `live-thinking` into the Thinking group,
+but it still lives in `streaming.py`. Each entry: what it changes, the stable
+anchor, and where it lives.
 
 ### Output & diffs — `output.py`
 

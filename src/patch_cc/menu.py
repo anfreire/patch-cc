@@ -49,7 +49,7 @@ from .patches import (
     derived_brand,
 )
 from .patches.agents import INHERIT, BuiltinAgent, discover_agents, discover_models
-from .ui import MARKS, console, err, findings
+from .ui import MARKS, applied_value, console, err, findings
 
 if TYPE_CHECKING:
     from .doctor import DryRun, Status
@@ -1028,12 +1028,15 @@ class MenuApp:
         report = self.report
         if report is None:
             return lines, None
+        options = self.model.selection().options
         for patch, outcome in report.results:
             mark, style = MARKS[outcome.health]
             line = Text()
             line.append(f"  {mark} ", style=style)
             line.append(f"{patch.title:<32}")
             line.append(f"{outcome.applied or '':>3}", style="dim")
+            if outcome.applied and (value := applied_value(patch, options)):
+                line.append(f"  → {value}", style="dim")
             lines.append(line)
             lines += _findings(outcome)
 
@@ -1063,6 +1066,12 @@ class MenuApp:
             )
             lines.append(line)
             lines.append(Text("    Restart Claude Code to see it.", style="dim"))
+            lines.append(
+                Text(
+                    "    Reapply this selection anytime:  patch-cc apply --from-cache",
+                    style="dim",
+                )
+            )
         return lines, None
 
     def _body_doctor(self, panel_width: int) -> tuple[list[Text], int | None]:

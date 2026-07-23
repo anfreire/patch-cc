@@ -184,6 +184,7 @@ PATCHES = [
         summary="Append a marker line to `claude --version` (custom text via --suffix).",
         group=GROUP_CHROME,
         fn=_version_output,
+        option="--suffix",
         anchors=("}.VERSION} (Claude Code)",),
     ),
     Patch(
@@ -192,6 +193,7 @@ PATCHES = [
         summary="Rename the startup/help branding (default: your username's Code).",
         group=GROUP_CHROME,
         fn=_branding,
+        option="--brand",
         anchors=('"Welcome to Claude Code"', '{bold:!0},"Claude Code"'),
     ),
 ]

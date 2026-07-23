@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from .patches.base import Outcome
+from .patches.base import Options, Outcome, Patch
 
 console = Console()
 
@@ -35,6 +35,22 @@ def findings(outcome: Outcome) -> list[tuple[str, str]]:
         lines.append(("dim", f"not on this build: {', '.join(absent)}"))
     notes = (*outcome.notes, *(n for s in outcome.steps.values() for n in s.notes))
     return lines + [("dim", note) for note in notes]
+
+
+def applied_value(patch: Patch, options: Options) -> str | None:
+    """The value a configurable patch actually wrote, for the report line.
+
+    Branding, the version marker, and model overrides each carry a chosen value;
+    a plain toggle patch carries none. One source so the CLI and the menu report
+    the same thing after an apply.
+    """
+    if patch.id == "branding":
+        return options.brand
+    if patch.id == "version-marker":
+        return options.version_suffix
+    if patch.id == "subagent-models" and options.subagent_models:
+        return ", ".join(f"{a}={m}" for a, m in options.subagent_models.items())
+    return None
 
 
 def heading(text: str) -> None:

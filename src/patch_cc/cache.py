@@ -1,10 +1,12 @@
 """Remembered interactive selection.
 
-The menu's only memory: the patches and customisations picked last time, so the
-next interactive run comes up pre-filled even after a Claude auto-update wiped
-the patched binary (and its manifest) away. It is never read by the ``apply``
-args path and never applies anything on its own -- deleting the file simply
-resets the menu to defaults.
+The last selection made, so the next interactive run comes up pre-filled even
+after a Claude auto-update wiped the patched binary (and its manifest) away.
+Written by the interactive menu and by any ``apply`` given an explicit selection
+-- a bare ``apply`` (the default set) leaves it untouched, so it never clobbers a
+remembered custom pick. ``apply --from-cache`` is the non-interactive reader,
+replaying that selection when explicitly asked. Deleting the file resets the
+menu to defaults and leaves ``--from-cache`` with nothing to replay.
 """
 
 from __future__ import annotations

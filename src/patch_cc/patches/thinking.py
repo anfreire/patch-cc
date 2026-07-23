@@ -192,8 +192,8 @@ def _thinking_summaries(content: str, _options: Options, outcome: Outcome) -> st
 PATCHES = [
     Patch(
         id="thinking-summaries",
-        title="Opt out of server-side experiments",
-        summary="Stop sending the account's experiment-bucket header, which can empty every thinking block.",
+        title="Fix blank thinking blocks",
+        summary="Opt out of the server-side experiment bucket that can return empty thinking blocks on some accounts. Drops all experiment enrollment, not just this one.",
         group=GROUP_THINKING,
         fn=_thinking_summaries,
         anchors=(_BUCKET_HEADER, "?.atis"),

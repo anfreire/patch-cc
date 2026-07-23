@@ -29,9 +29,11 @@ shape that already absorbs every case, found rather than bolted on.
   brick.
 
 - **Explicit invocations are hermetic.** A non-interactive command's arguments
-  are its whole input; no saved state may silently change what it does, so the
-  same command always yields the same result. Persisted choices belong to the
-  interactive UI alone — they pre-fill a prompt, never trigger an action.
+  are its whole input; no saved state may *silently* change what it does.
+  Persisted choices pre-fill the interactive UI and never act on their own — the
+  lone exception is `apply --from-cache`, which takes the cache as its *named*
+  input, so the state it reads is declared in the arguments, not hidden behind a
+  default. Absent that flag, the same command still always yields the same result.
 
 - **Anchor matchers on meaning.** String literals, `case` labels, prop names,
   control-flow shape — never a minified local that changes every build. A new

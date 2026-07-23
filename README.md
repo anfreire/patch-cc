@@ -48,9 +48,9 @@ patch-cc                       # then just run it
 |---|---|---|
 | Output & diffs | Detailed tool calls | Show full read/search calls, not collapsed summaries |
 | | Colour new files as diffs | Created files render with `+` lines and green |
-| Thinking | Opt out of server-side experiments | Some accounts land in one that empties every thinking block |
+| Thinking | Fix blank thinking blocks | Opt out of the server-side experiment that can empty every thinking block |
 | | Always show thinking | Thinking blocks stay inline — no `ctrl+o` |
-| Live thinking | Stream thinking live | See reasoning as it is generated, inline and in order |
+| | Stream thinking live | See reasoning as it is generated, inline and in order |
 | Subagents | Show subagent prompts | Prompt blocks visible during normal use |
 | | Override subagent models | Pick the model per built-in agent (discovered from your binary) |
 | Chrome | Disable spinner tips | No rotating tips on the spinner |
@@ -69,10 +69,11 @@ uvx patch-cc apply --brand                    # + branding as <username>'s Code
 uvx patch-cc apply --brand "Ada's Code"       # + branding, explicit name
 uvx patch-cc apply --model Explore=haiku --model general-purpose=opus
 uvx patch-cc apply --suffix "(mine)"          # custom --version marker
+uvx patch-cc apply --from-cache               # replay your last remembered selection
 uvx patch-cc status                           # exactly what is applied
 uvx patch-cc doctor                           # do all patches match this build?
 uvx patch-cc doctor path/to/claude            # ...or match some other binary
-uvx patch-cc list                             # patches + your binary's agents/models
+uvx patch-cc list                             # every patch, described
 uvx patch-cc restore                          # put the original back
 ```
 
@@ -82,8 +83,9 @@ against what your installed binary actually ships.
 ## After a Claude update
 
 Claude auto-updates roughly daily and replaces the binary, which reverts the
-patch. Re-run `patch-cc` — the menu remembers your last selection — or re-apply
-your set explicitly:
+patch. Re-run `patch-cc` — the menu remembers your last selection — replay it
+without the menu via `patch-cc apply --from-cache`, or re-apply your set
+explicitly:
 
 ```bash
 uvx patch-cc apply --brand --model Explore=haiku
