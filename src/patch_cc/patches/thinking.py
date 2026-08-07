@@ -32,6 +32,7 @@ from __future__ import annotations
 import re
 
 from .base import (
+    ARRAY_CALL,
     GROUP_MODELS,
     GROUP_OUTPUT,
     IDENT,
@@ -219,7 +220,7 @@ _EFFORT_GATE = compile_js(
 # then reverted by a Claude update) treats it as unset rather than failing the
 # whole settings parse -- the property that makes this patch safe to lose.
 _EFFORT_SCHEMA = compile_js(
-    rf'effortLevel:({IDENT})\.enum\(\["low","medium","high","xhigh"(,"max")?\]\)'
+    rf'(effortLevel:{ARRAY_CALL})"low","medium","high","xhigh"(?:,"max")?(\]\))'
 )
 
 
@@ -242,14 +243,14 @@ def _max_effort(content: str, _options: Options, outcome: Outcome) -> str:
 
     output = _EFFORT_GATE.sub(widen_gate, content)
 
+    # No already-applied branch, unlike the gate above: the levels are spliced
+    # into the array the match found, so a bundle that already carries `max` is
+    # rewritten to itself. `widen_gate` needs one because its unconditional path
+    # also normalises the brace form, and would churn a bundle that was fine.
     def widen_schema(match: re.Match[str]) -> str:
         schema.candidates += 1
         schema.applied += 1
-        if match.group(2):
-            return match.group(0)
-        return (
-            f'effortLevel:{match.group(1)}.enum(["low","medium","high","xhigh","max"])'
-        )
+        return f'{match.group(1)}"low","medium","high","xhigh","max"{match.group(2)}'
 
     return _EFFORT_SCHEMA.sub(widen_schema, output)
 

@@ -277,6 +277,19 @@ def compile_js(pattern: str, flags: int = 0) -> re.Pattern[str]:
 # Matches a minified identifier, the JS `[A-Za-z_$][\w$]*` idiom.
 IDENT = r"[A-Za-z_$][\w$]*"
 
+#: From a schema's property name to the *opening* of the array literal it is
+#: built from -- the ``([`` included, so a site composes this as
+#: ``prop:{ARRAY_CALL}`` and never spells the call open itself.
+#:
+#: Whatever expression the build reaches the factory through is skipped
+#: unmodelled, because the callee is minifier noise that churns every few
+#: releases (``E.enum(`` ... ``w.enum(`` ... ``Ir(`` for one unchanged schema).
+#: Lazy but not unbounded: ``[^;{}]`` cannot cross a statement or block edge,
+#: and the spans it actually spends are 47-51 and 88-92 characters on every
+#: build we hold. What the surviving anchors must carry instead -- which is a
+#: debt this raises, per site: docs/PLAYBOOK.md.
+ARRAY_CALL = r"[^;{}]*?\(\["
+
 
 def switch_case_end(content: str, start: int) -> int:
     """End offset of a ``switch`` arm beginning at ``start``.

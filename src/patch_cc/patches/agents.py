@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass
 
 from .base import (
+    ARRAY_CALL,
     GROUP_MODELS,
     GROUP_OUTPUT,
     IDENT,
@@ -156,7 +157,7 @@ _DEF_WINDOW = 3000
 #: why that ordering is load-bearing). Matched separately, the two would drift
 #: apart on the next upstream reshape, and only one of them would be repaired.
 MODEL_ENUM = compile_js(
-    rf'model:{IDENT}\.enum\(\[((?:"{_MODEL_CHARS}+",?)+)\]\)\.optional\(\)'
+    rf'model:{ARRAY_CALL}((?:"{_MODEL_CHARS}+",?)+)\]\)\.optional\(\)'
     rf'\.describe\([`"]Optional model override'
 )
 #: Used only if the Task-tool schema anchor ever disappears.

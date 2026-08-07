@@ -17,10 +17,35 @@ constantly. These rules are what keep matchers alive:
   literals, `case` labels, prop names, or control-flow shape.
 - Match the *semantic shape* of a function body, not its symbol names.
 - When upstream ships more than one shape for the same feature, add a second
-  narrow branch — don't widen one regex until it over-matches.
+  narrow branch — don't widen one regex until it over-matches. A different
+  *spelling* of one shape is not a second shape, and does not earn a branch; see
+  "applied to, not reached through" below for where that line falls.
 - Accept statement variants a minifier flips between. The thinking gate broke
   on 2.1.216 solely because `if(x)return null;` became `if(x){return null}` —
   matchers should allow both from day one.
+- **Applied to, not reached through.** Match what a helper is applied to; say
+  nothing about how it is reached. The callee of a zod schema is pure minifier
+  noise — the persisted `effortLevel` reads `E.enum(` on 2.1.216, `A.enum(`,
+  `b.enum(`, `v.enum(`, `w.enum(` through 2.1.223, then `Ir(` on 2.1.224 — and
+  every matcher that named any of it dated itself to one build. 2.1.224 is the
+  proof: `.enum([` dropped from 241 sites to 23 in a single release, because the
+  spelling tracks which *module* a schema lives in (bundled namespace alias vs
+  bare standalone factory), never what the schema is. So the callee is
+  `base.ARRAY_CALL` — whatever sits between the prop name and the array literal,
+  bounded only by statement and block edges — and no spelling is enumerated.
+  Enumerating the spellings seen so far only defers the same break to the next
+  one; that is the boundary of the narrow-branch rule above.
+- **Dissolving the callee raises what the surviving anchors must carry**, and
+  that debt is per-site, never general. `effortLevel:` plus its level array is
+  unique on every build. `model:` plus an array is *not* — 6 sites on
+  2.1.216–220, 12 on 2.1.221–224 — so `MODEL_ENUM`'s
+  ``.optional().describe(`Optional model override`` tail is its sole
+  discriminator, not belt-and-braces. Trimmed, the matcher finds three sites, two
+  of them the settings-scope enum `["user","project","local"]`, and
+  `codex-models` splices Codex ids into it. Measure an anchor's match count on
+  every backup before removing any part of it: under the older, tighter callee
+  that same probe read 1 on all 8 builds, so a measurement taken before the
+  callee was dissolved does not survive it.
 - Match an optional brace **pair** conditionally (`(\{)?…(?(1)\})`), never as
   two independent `\{?` / `\}?`. A lone optional closing brace eats the
   *enclosing* block's `}` on the unbraced shape, and a rewrite that emits its
@@ -41,8 +66,8 @@ Anything the binary can enumerate for us, it does:
   `agentType:"<name>",whenToUse:` carrying `source:"built-in"` in the same
   object (`agents.discover_agents`). Definitions whose `whenToUse` begins with
   `"Internal` are plumbing and are not offered.
-- **Model aliases** come from the Task tool's own input schema: the
-  `model:<zod>.enum([...])` whose describe-string starts
+- **Model aliases** come from the Task tool's own input schema: the `model`
+  enum whose describe-string starts
   `Optional model override` — `agents.MODEL_ENUM`, one compiled anchor because
   `codex-models` splices the chosen Codex ids into the very group
   `discover_models` reads back out.
