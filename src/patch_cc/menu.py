@@ -634,9 +634,16 @@ class MenuApp:
 
     @staticmethod
     def _disable_flow_control() -> None:
-        """Free ctrl+s from XOFF so a stray press cannot freeze the screen."""
+        """Free ctrl+s from XOFF so a stray press cannot freeze the screen.
+
+        Nothing to lift on Windows, whose console never claims ctrl+s. Tested
+        with ``sys.platform`` rather than importing by name, because mypy narrows
+        on it -- so the calls below stay checked on the platforms that run them.
+        """
+        if sys.platform == "win32":
+            return
         try:
-            import termios
+            import termios  # noqa: PLC0415 - POSIX-only, and only wanted here
 
             fd = sys.stdin.fileno()
             attrs = termios.tcgetattr(fd)
