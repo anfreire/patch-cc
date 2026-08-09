@@ -8,7 +8,6 @@ place keeps ``.bun`` where it is and grows the file by only the delta.
 
 from __future__ import annotations
 
-import os
 import struct
 from dataclasses import dataclass
 
@@ -260,22 +259,3 @@ def write_section(buf: bytes, payload: bytes, name: str = ".bun") -> bytes:
             struct.pack_into("<Q", out, base + 8, seg.offset + delta)
 
     return bytes(out)
-
-
-def atomic_write(path: str, data: bytes, mode_from: str | None = None) -> None:
-    """Write ``data`` to ``path`` via a temp file, preserving the mode bits."""
-    tmp = f"{path}.patch-cc.tmp"
-    try:
-        with open(tmp, "wb") as handle:
-            handle.write(data)
-        source = mode_from or (path if os.path.exists(path) else None)
-        if source:
-            os.chmod(tmp, os.stat(source).st_mode & 0o7777)
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-        raise

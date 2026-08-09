@@ -325,8 +325,10 @@ def restore(install: locate.Installation) -> Path:
             f"{backup_path_for(install)}. If Claude auto-updated, the original "
             "for this version was never saved -- reinstall to get a clean binary."
         )
-    # A full-file copy-back, so it works for both ELF and Mach-O.
-    from .bun.elf import atomic_write  # noqa: PLC0415
-
-    atomic_write(str(install.binary), backup.read_bytes(), mode_from=str(backup))
+    # A full-file copy-back, so it works for every container we patch. Staged
+    # beside the target and renamed over it, which is also how a `claude` that is
+    # running right now gets replaced.
+    staged = f"{install.binary}{container.TMP_SUFFIX}"
+    shutil.copy2(backup, staged)
+    container.replace(staged, str(install.binary))
     return install.binary
