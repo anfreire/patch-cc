@@ -1,4 +1,4 @@
-"""One API over the two binary containers we support: ELF and Mach-O."""
+"""One API over the three binary containers we support: ELF, Mach-O and PE."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 
 from . import blob as blobmod
-from . import elf, macho
+from . import elf, macho, pe
 from .errors import BunError
 
 ELF_MAGIC = b"\x7fELF"
@@ -31,9 +31,11 @@ def detect(path: str) -> str:
         return "elf"
     if magic in MACHO_MAGICS:
         return "macho"
+    if magic[: len(pe.DOS_MAGIC)] == pe.DOS_MAGIC:
+        return "pe"
     raise ContainerError(
-        f"{path} is neither ELF nor Mach-O. Claude Code must be the native "
-        "build -- reinstall with `curl -fsSL https://claude.ai/install.sh | bash`."
+        f"{path} is not an ELF, Mach-O or PE binary. Claude Code must be the "
+        "native build -- reinstall with `curl -fsSL https://claude.ai/install.sh | bash`."
     )
 
 
@@ -56,12 +58,13 @@ class Bundle:
 
 def read(path: str) -> Bundle:
     kind = detect(path)
-    if kind == "elf":
+    # Mach-O is the odd one out: LIEF works on a file, the other two on bytes.
+    if kind == "macho":
+        section = macho.read_section(path)
+    else:
         with open(path, "rb") as handle:
             raw = handle.read()
-        section = elf.read_section(raw)
-    else:
-        section = macho.read_section(path)
+        section = pe.read_section(raw) if kind == "pe" else elf.read_section(raw)
 
     payload, header_size = blobmod.unwrap_section(section)
     parsed = blobmod.parse(payload)
@@ -94,16 +97,20 @@ def write(
     tmp = f"{out_path}.patch-cc.tmp"
 
     try:
-        if bundle.kind == "elf":
+        if bundle.kind == "macho":
+            shutil.copy2(bundle.path, tmp)
+            macho.write_section(tmp, section)
+        else:
             with open(bundle.path, "rb") as handle:
                 raw = handle.read()
-            patched = elf.write_section(raw, section)
+            patched = (
+                pe.write_section(raw, section)
+                if bundle.kind == "pe"
+                else elf.write_section(raw, section)
+            )
             with open(tmp, "wb") as handle:
                 handle.write(patched)
             os.chmod(tmp, os.stat(bundle.path).st_mode & 0o7777)
-        else:
-            shutil.copy2(bundle.path, tmp)
-            macho.write_section(tmp, section)
 
         verify(tmp, source)  # raises before we commit if anything is off
         os.replace(tmp, out_path)
