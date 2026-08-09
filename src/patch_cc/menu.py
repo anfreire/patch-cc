@@ -1192,8 +1192,11 @@ class MenuApp:
             self.exit_code = 1 if payload.broken else 0
             self.view = "doctor"
         elif kind == "restore":
-            if error is not None:
-                self.flash = error
+            if error is not None or payload is None:
+                # `None` without an error is an outcome, not a failure: nothing
+                # was patched, so nothing was put back. A flash is one line, so
+                # it states the reason rather than the paragraph the CLI prints.
+                self.flash = error or "nothing to restore: this binary is not patched"
                 self.view = "select"
                 return
             self.exit_message = "Restored the original binary. Restart Claude Code."
@@ -1586,9 +1589,9 @@ def run_menu() -> int:
 
     try:
         installed = container.read(str(install.binary))
-        # Before the first apply there is no backup, and the installed binary
-        # *is* the pristine source -- handing it over keeps a first run from
-        # reading the same 275 MB file twice.
+        # The installed binary is what `read_pristine` consults first, and it is
+        # already in hand for the status line -- handing it over keeps every run
+        # from reading the same 275 MB file twice.
         pristine = patcher.read_pristine(install, installed=installed)
     except BunError as exc:
         err(str(exc))

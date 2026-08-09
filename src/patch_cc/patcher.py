@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import __version__, locate
-from .bun import Bundle, container
+from .bun import Bundle, BunError, container
 from .patches import ALL_PATCHES, DEFAULT_SUFFIX, SENTINEL, Options, Outcome, Patch
 
 #: Every patched bundle ends with one comment line recording exactly what was
@@ -200,32 +200,73 @@ def existing_backup(install: locate.Installation) -> Path | None:
 def read_pristine(
     install: locate.Installation, *, installed: Bundle | None = None
 ) -> Bundle:
-    """The bundle patching starts from: the backup when one exists.
+    """The bundle patching starts from: the installed binary while it is still
+    the original, and the kept copy only once it is not.
 
     Patching never stacks edits on edits -- each apply begins at this pristine
     source, so the selected set is always exactly what ends up in the binary.
 
-    ``installed`` may carry an already-read bundle of the installed binary. With
-    no backup yet -- where every first run is -- that bundle *is* the pristine
-    source, so a caller that needed it anyway (the menu reads it for status)
-    stops paying for a second full read of the same 275 MB file.
+    The install is asked *first* because it is the original of the version
+    installed now, while a backup is only the original of the version it was
+    taken from. Those coincide wherever the launcher is version-named, and part
+    company wherever it is a fixed path: every Windows install, and any Homebrew
+    or npm one. There, a Claude update leaves a backup describing the version
+    before it, and starting from that would patch the old bundle over the new
+    install -- silently downgrading Claude. An update replaces the whole binary,
+    so "installed and unpatched" means "installed and pristine".
+
+    ``installed`` may carry an already-read bundle of the installed binary, so a
+    caller that needed it anyway (the menu reads it for status) stops paying for
+    a second full read of the same 275 MB file.
     """
     backup = existing_backup(install)
-    if backup is not None:
-        return container.read(str(backup))
-    return installed if installed is not None else container.read(str(install.binary))
+    if installed is None:
+        try:
+            installed = container.read(str(install.binary))
+        except (BunError, OSError):
+            # An install we cannot read is not a pristine source of anything, and
+            # is exactly when a kept copy earns its keep. With no copy the failure
+            # is still the answer, so it propagates. `OSError` too: on Windows the
+            # likely shape is a sharing violation from a scanner or an in-flight
+            # updater, which never reaches the parser at all.
+            if backup is None:
+                raise
+            return container.read(str(backup))
+    if not is_patched(installed.source):
+        return installed
+    return container.read(str(backup)) if backup is not None else installed
 
 
-def _backup(install: locate.Installation) -> Path:
-    """Record the pristine original once, so ``restore`` is a plain copy back.
+def _backup(install: locate.Installation, pristine: Bundle) -> Path:
+    """Record the pristine original, so ``restore`` is a plain copy back.
 
     Only ever reached with an unpatched original: :func:`patch_installation`
     refuses a patched binary that has no backup to start from, so there is no
     path here that could enshrine a poisoned "original" for ``restore`` to hand
     back as clean.
+
+    Rewritten only where all three hold: the launcher's name carries no version
+    (so the kept copy cannot vouch for which release it is), ``pristine`` *is*
+    the installed binary (the other half of what :func:`read_pristine` decided),
+    and that binary still carries its entrypoint bytecode. A version-named
+    install is thereby left alone -- each release already backs up under its own
+    name.
+
+    The bytecode is a second opinion on "unpatched", because this is the one
+    branch that can destroy a clean copy. Everything above rests on
+    :func:`is_patched`, a string fingerprint that has already changed once (hence
+    ``_LEGACY_MARKER``); were it to miss again, a patched install would read as
+    pristine and be written over the only pristine copy there was. Every shipped
+    build carries ~154 MB of bytecode and every binary we write has none, so a
+    bundle with any was not written by us, whatever the fingerprint says.
     """
     existing = existing_backup(install)
-    if existing is not None:
+    supersedes_the_kept_copy = (
+        install.version is None
+        and Path(pristine.path) == install.binary
+        and pristine.bytecode_size > 0
+    )
+    if existing is not None and not supersedes_the_kept_copy:
         return existing
     dest = backup_path_for(install)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -239,7 +280,9 @@ def _backup(install: locate.Installation) -> Path:
     # atomic, so the name appears only once the bytes are all there.
     staged = dest.with_name(dest.name + ".partial")
     try:
-        shutil.copy2(install.binary, staged)
+        # Named by the bundle we vetted rather than by the install, so the file
+        # copied is provably the one the decision above was made about.
+        shutil.copy2(pristine.path, staged)
         os.replace(staged, dest)
     except BaseException:
         staged.unlink(missing_ok=True)
@@ -308,7 +351,7 @@ def patch_installation(
     # install *without* the backup -- that switch existed, had no caller, and its
     # only effect was to skip the one thing `restore` depends on.
     if out_path is None:
-        report.backup = _backup(install)
+        report.backup = _backup(install, source)
 
     container.write(source, patched_source, str(target))
     report.output = Path(target)
@@ -316,8 +359,32 @@ def patch_installation(
     return report
 
 
-def restore(install: locate.Installation) -> Path:
-    """Copy the pristine backup back over the installed binary."""
+def restore(install: locate.Installation) -> Path | None:
+    """Copy the pristine backup back over the installed binary.
+
+    ``None`` when there was nothing to undo -- an outcome, not a failure: the
+    binary is already what the user asked for, and the copy we would have
+    written is not necessarily *this* version.
+
+    That is refused only where the install is *readable, unpatched and
+    unversioned*: the rule :func:`read_pristine` follows, scoped to the layout
+    where it bites. Where the launcher is a fixed path the kept copy is of
+    whichever release was patched last, so after a Claude update it is the
+    *previous* one, and copying it back would answer "give me my clean binary"
+    with a silent downgrade. Where the launcher carries the version its own name
+    pins it, so a byte-exact re-copy is a reasonable thing to ask for.
+
+    An install we cannot read is never refused: a working older Claude beats a
+    broken newer one, and un-bricking must not be conditional on the brick being
+    readable.
+
+    The kept copy is read before it is installed. That is the only check worth
+    making here and it is on the file being *written* -- one truncated by a full
+    disk or a killed run would otherwise be installed over a working binary and
+    reported as a success. Since ``_backup`` now rewrites that copy on every
+    apply against a fixed-path install, its integrity carries more weight than
+    it used to.
+    """
     backup = existing_backup(install)
     if backup is None:
         raise FileNotFoundError(
@@ -325,6 +392,15 @@ def restore(install: locate.Installation) -> Path:
             f"{backup_path_for(install)}. If Claude auto-updated, the original "
             "for this version was never saved -- reinstall to get a clean binary."
         )
+    container.read(str(backup))  # raises rather than install an unusable copy
+
+    if install.version is None:
+        try:
+            if not is_patched(container.read(str(install.binary)).source):
+                return None
+        except (BunError, OSError):
+            pass  # not known to be pristine, so not one we refuse to replace
+
     # A full-file copy-back, so it works for every container we patch. Staged
     # beside the target and renamed over it, which is also how a `claude` that is
     # running right now gets replaced.

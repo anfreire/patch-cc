@@ -654,6 +654,16 @@ def cmd_restore(args) -> int:
     except FileNotFoundError as exc:
         err(str(exc))
         return 1
+    if restored is None:
+        # Not an error: the binary is already what was asked for. Warned rather
+        # than reported as success, because the thing that did *not* happen -- a
+        # copy-back that could have downgraded Claude -- is the point.
+        warn(
+            f"{install.binary} is not patched, so there is nothing to restore. "
+            "The kept copy is of whichever version was patched last, and putting "
+            "it back could replace a newer Claude with an older one."
+        )
+        return 0
     ok(f"Restored {restored} from backup.")
     console.print("[dim]Restart Claude Code for changes to take effect.[/dim]")
     return 0
