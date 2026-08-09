@@ -7,12 +7,23 @@ to patch in a node_modules tree anymore.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from .bun import BunError, container
+from .bun.errors import INSTALL_HINT
+
 _VERSION_DIR = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
+
+#: What the launcher is called in the directories we probe by name. Windows needs
+#: the suffix: the native installer puts a plain copy at ``~/.local/bin/claude.exe``
+#: there, rather than the symlink into ``versions/`` it manages elsewhere. (The
+#: version directory is enumerated, not probed, so its contents are found either
+#: way.)
+_LAUNCHER = "claude.exe" if os.name == "nt" else "claude"
 
 
 def _version_sort_key(path: Path) -> tuple[int, int, int]:
@@ -28,9 +39,11 @@ def _version_sort_key(path: Path) -> tuple[int, int, int]:
 class Installation:
     """A resolved Claude install.
 
-    ``launcher`` is what the user runs (often a symlink); ``binary`` is the real
-    file we patch. When Claude is installed the canonical way they differ, and
-    patching ``binary`` in place means the launcher keeps working.
+    ``launcher`` is what the user runs; ``binary`` is the real file we patch.
+    On macOS and Linux the canonical install makes the launcher a symlink into
+    ``versions/``, so the two differ and patching ``binary`` in place means the
+    launcher keeps working. On Windows the installer writes a plain copy, so they
+    are the same file and there is nothing to follow.
     """
 
     launcher: Path
@@ -60,9 +73,9 @@ def _candidates() -> list[Path]:
     if versions.is_dir():
         found.extend(sorted(versions.iterdir(), key=_version_sort_key, reverse=True))
 
-    for extra in (home / ".local" / "bin" / "claude", home / "bin" / "claude"):
-        if extra.exists():
-            found.append(extra)
+    for directory in (home / ".local" / "bin", home / "bin"):
+        if (launcher := directory / _LAUNCHER).exists():
+            found.append(launcher)
 
     return found
 
@@ -78,8 +91,6 @@ def _resolve(path: Path) -> Installation | None:
 
 def _is_native(binary: Path) -> bool:
     """Is this file one of the containers we can actually open?"""
-    from .bun import BunError, container  # noqa: PLC0415 - keeps import order flat
-
     try:
         container.detect(str(binary))
     except (BunError, OSError):
@@ -124,6 +135,6 @@ def find_or_raise() -> Installation:
     if install is None:
         raise FileNotFoundError(
             "Could not find a Claude Code install. Install the native build with:\n"
-            "  curl -fsSL https://claude.ai/install.sh | bash"
+            f"  {INSTALL_HINT}"
         )
     return install

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from . import blob as blobmod
 from . import elf, macho, pe
-from .errors import BunError
+from .errors import INSTALL_HINT, BunError
 
 ELF_MAGIC = b"\x7fELF"
 MACHO_MAGICS = {
@@ -52,7 +52,7 @@ def detect(path: str) -> str:
         return "pe"
     raise ContainerError(
         f"{path} is not an ELF, Mach-O or PE binary. Claude Code must be the "
-        "native build -- reinstall with `curl -fsSL https://claude.ai/install.sh | bash`."
+        f"native build -- reinstall with `{INSTALL_HINT}`."
     )
 
 

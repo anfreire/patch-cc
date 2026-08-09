@@ -41,6 +41,7 @@ from rich.text import Text
 
 from . import cache, locate, patcher
 from .bun import Bundle, BunError, container
+from .bun.errors import INSTALL_HINT
 from .codex import DEFAULT_PORT, is_valid_port
 from .codex.models import CodexModel, discover, reconcile
 from .patches import (
@@ -1580,9 +1581,7 @@ def run_menu() -> int:
     install = locate.find()
     if install is None:
         err("No Claude Code native install found.")
-        console.print(
-            "  Install it with: [cyan]curl -fsSL https://claude.ai/install.sh | bash[/cyan]"
-        )
+        console.print(f"  Install it with: [cyan]{INSTALL_HINT}[/cyan]")
         return 1
 
     try:
