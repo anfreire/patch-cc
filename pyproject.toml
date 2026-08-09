@@ -20,6 +20,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -51,7 +52,7 @@ dev = [
 [tool.mypy]
 python_version = "3.11"
 
-# lief is a macOS-only dependency, so it is absent when checking on Linux.
+# lief is a macOS-only dependency, so it is absent when checking anywhere else.
 [[tool.mypy.overrides]]
 module = "lief.*"
 ignore_missing_imports = true

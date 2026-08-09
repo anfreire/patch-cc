@@ -227,6 +227,9 @@ that broke a patch along with every note.
    patch-cc extract ~/.local/share/claude/versions/<ver> > clean.js
    ```
 
+   On Windows the installed binary is a plain copy, so the path is
+   `$env:USERPROFILE\.local\bin\claude.exe`.
+
 2. Run `patch-cc doctor`. Note which patch dropped to `candidates == 0`, or —
    for `live-thinking` — which sub-step.
 
@@ -255,6 +258,13 @@ that broke a patch along with every note.
 
    That is what keeps "add a narrow branch" honest: a widened regex that
    over-matches an older build shows up here instead of in a bug report.
+
+   The corpus only accumulates where the launcher is version-named, so each
+   version backs up under its own name. Where it is a fixed path — every Windows
+   install, and any Homebrew or npm one — there is one backup and an update
+   replaces it, because it has to describe the version installed *now* (see the
+   pristine-source rule in [INTERNALS.md](INTERNALS.md#safety)). Keep older
+   binaries by hand there, or download them: `doctor` is happy with any path.
 
 ## Patch reference
 

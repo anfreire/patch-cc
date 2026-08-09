@@ -18,14 +18,21 @@ uvx patch-cc                   # fullscreen menu, no install needed
 
 ## Requirements
 
-- **Linux or macOS**
+- **Linux, macOS or Windows**
 - **Python 3.11+**
 - **[uv](https://docs.astral.sh/uv/)** — how patch-cc is run and installed
-  below. Install it with `curl -LsSf https://astral.sh/uv/install.sh | sh`.
-  Not using uv? `pipx install patch-cc` (or `pip install patch-cc`) works too;
-  it is an ordinary PyPI package.
+  below. Install it with `curl -LsSf https://astral.sh/uv/install.sh | sh`, or
+  on Windows `irm https://astral.sh/uv/install.ps1 | iex`. Not using uv?
+  `pipx install patch-cc` (or `pip install patch-cc`) works too; it is an
+  ordinary PyPI package.
 - **macOS only:** the Xcode command line tools, for `codesign` — a patched
   binary has to be re-signed or macOS refuses to run it.
+- **Windows only:** nothing extra. Patching breaks the Anthropic signature
+  whatever we do, so patch-cc removes it rather than leave a broken one — a
+  patched binary reads as *unsigned*, not as tampered with, and Windows runs it
+  either way. `patch-cc restore` brings the signed original back. Patching while
+  Claude Code is running works too, even from inside a session: the running
+  binary is parked beside the new one, so you just restart.
 
 The menu is a single centered panel: move with `↑ ↓`, toggle with `space`,
 press `s` to save. Patches that carry a setting — subagent models, Codex models,
@@ -168,7 +175,8 @@ startup name / `--version` marker are visible tells too.
 
 Claude Code now ships only as a Bun single-file executable; the npm package is a
 wrapper that downloads it. patch-cc edits the JavaScript bundle embedded in the
-binary's `.bun` section in place. It also drops the module's 154 MB of stale
+binary's `.bun` section in place — an ELF section on Linux, `__BUN,__bun` on
+macOS, a PE section on Windows. It also drops the module's 154 MB of stale
 precompiled bytecode — editing the source invalidates it anyway — so a patched
 binary is *smaller* than the original (≈113 MB vs 267 MB), not larger.
 
