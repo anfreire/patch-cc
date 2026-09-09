@@ -10,26 +10,32 @@ claim is one command from re-verification instead of a number you have to trust.
 Before the first patch of a version, patch-cc copies the pristine binary to
 `~/.local/share/patch-cc/backups/<version>.orig` ([INTERNALS.md](INTERNALS.md#safety)).
 The corpus is exactly those copies: not a fixture checked into the repo (each is
-~300 MB), but a set that **accretes on its own** as Claude auto-updates and you
-re-patch — and that can be backfilled by saving any pristine native binary under
-the same name. `doctor <path>` reads one; the sweep below reads all of them.
+a few hundred MB), but a directory this machine fills. Left alone it fills
+**unevenly** — a build patched here leaves its `.orig`, a build that shipped while
+this machine sat idle leaves nothing — so the set samples an update cadence rather
+than a release history, and its holes are invisible from inside it.
+`scripts/corpus.py` closes that: Anthropic still serves every build it published,
+so the set is completed off the artifact, like everything else here.
 
 The binaries are the artifact, not this file — `doctor` recomputes every count
-from them, so nothing here can drift from what a matcher actually does. This
-file is a fixed point to check the binaries *against*: a hash that no longer
-matches means the file changed under you, not that a number moved.
+from them, so nothing here can drift from what a matcher actually does. Nor is
+this file where "pristine" is defined: every release manifest carries a
+per-platform sha256 and each `.orig` is checked against it. The table below is
+where that check is written down once per build, so its hashes are the offline
+record for builds Anthropic may one day stop serving — never a second authority
+to keep in step.
 
 ## On disk now
 
-The whole published span `2.1.210` → `2.1.257` — 2.1.230, 2.1.244, 2.1.249 and
-2.1.253–2.1.256 are not on the release channel — one pristine binary per
-version, 41 in all. It straddles the **2.1.242 code split** (INTERNALS.md):
-`2.1.242`/`2.1.243` are the first many-module builds, and they jump ~35 MB over
-`2.1.241` for it. Several pairs share a byte count
-(`2.1.225`/`2.1.226`, `2.1.229`/`2.1.231`, `2.1.239`–`2.1.241`, `2.1.242`/`2.1.243`,
-`2.1.248`/`2.1.250`, `2.1.251`/`2.1.252`)
-and are still distinct binaries, which is why the identity column is the hash (of
-the whole file, `sha256sum <version>.orig`) and never the size:
+One row per pristine binary held, appended as builds ship and never restated — so
+a hash that stops matching means the file changed under you, not that a number
+moved. A gap in the numbering is upstream's rather than a miss: not every version
+reached the release channel, and `corpus.py status` names which, so no list of
+them is kept here to go stale. The set straddles the **2.1.242 code split**
+(INTERNALS.md): `2.1.242`/`2.1.243` are the first many-module builds, and they
+jump ~35 MB over `2.1.241` for it. Sizes repeat across builds, which is why the
+identity column is the hash (of the whole file, `sha256sum <version>.orig`) and
+never the size:
 
 | version | size | sha256 |
 |---|---|---|
@@ -68,12 +74,19 @@ the whole file, `sha256sum <version>.orig`) and never the size:
 | `2.1.243` | 378 MB | `4b0dafeedd0b469c41988e200036fd773e7553ba960349c9f02a82c6d1f2ba27` |
 | `2.1.245` | 392 MB | `16ad2b94deaf7b29abed966d981c9991a47af0420f5be8ed4a3f83bea9f678bc` |
 | `2.1.246` | 248 MB | `1a0a662dc1bb938eaec38545abce9a4a69113d7d7f7c5e1a553ea276617b906a` |
-| `2.1.247` | 239 MB | `5fb321bf417ffc5cd4e3f36e7c9c7e029bf47aaa36d5621db979fcc5e6eabe15` |
-| `2.1.248` | 214 MB | `3edee3cb054bd6823674fd60d5c0e442825b28ee8fbf815af2d16bf0de072e16` |
-| `2.1.250` | 214 MB | `2be252a00ac56e704d7fbf7e5e9ef1243584093334a861945238a0c27e84bdac` |
-| `2.1.251` | 205 MB | `fd5f10ff0eb58daec04900466b143ea98aab50abf208a422bc008eaec13f61f7` |
-| `2.1.252` | 205 MB | `a715a45105e593fc9808d035d77781f88480b9897975a9df41837f0c591bd4b3` |
-| `2.1.257` | 206 MB | `9a64bda9d8722a1fa05bef9a5961d07e0331b99597eda9e2f6a732f3a0ff7f05` |
+| `2.1.247` | 250 MB | `5fb321bf417ffc5cd4e3f36e7c9c7e029bf47aaa36d5621db979fcc5e6eabe15` |
+| `2.1.248` | 224 MB | `3edee3cb054bd6823674fd60d5c0e442825b28ee8fbf815af2d16bf0de072e16` |
+| `2.1.250` | 224 MB | `2be252a00ac56e704d7fbf7e5e9ef1243584093334a861945238a0c27e84bdac` |
+| `2.1.251` | 214 MB | `fd5f10ff0eb58daec04900466b143ea98aab50abf208a422bc008eaec13f61f7` |
+| `2.1.252` | 214 MB | `a715a45105e593fc9808d035d77781f88480b9897975a9df41837f0c591bd4b3` |
+| `2.1.257` | 215 MB | `9a64bda9d8722a1fa05bef9a5961d07e0331b99597eda9e2f6a732f3a0ff7f05` |
+| `2.1.258` | 215 MB | `704f1334ac65d3e89e1c6c1d7663293ad786a6166afdb71b5075337df630f976` |
+| `2.1.259` | 217 MB | `f7dd62ae415378018cd21dd950eb3bac174ab085830304d3b8b098146bfd47b6` |
+| `2.1.260` | 215 MB | `7a2fdc74b6836ea3d183f665b869f0ee3baebc9713cbebffe5838da4ea7bd82e` |
+| `2.1.261` | 216 MB | `4ae40dd1784e85753e742e09f267d29ecbb82890361ad3817d27560866d364a6` |
+| `2.1.263` | 216 MB | `26d020351e8112f4006790f3cfce43b4c9df0c1bb1d0e542364d64151b81d5ba` |
+| `2.1.265` | 216 MB | `e14738e3a58d1fc6ccc23b9c919451b4846bc27074a3fb48db976a7d595bdeeb` |
+| `2.1.266` | 216 MB | `19842705e989393fce936804df6d2ab034860e24b8f8880357981d87ffd83fac` |
 
 This set covers the span the playbook's tree-move measurements were taken over
 (`2.1.210` → `2.1.233`), the 2.1.242 split, the 2.1.246 stream-store
@@ -81,13 +94,30 @@ migration, the 2.1.247 selector reads it was read back through, and the
 2.1.257 compiled transcript renderer that retired live thinking's render half,
 so each is re-checkable here rather than historical.
 
-## Rebuild or extend it
+## Keep it complete
 
-The corpus grows every time patch-cc touches a new build — each first patch of
-a version leaves its `.orig` — and a version this machine never patched joins
-the same way: save its pristine native binary as
-`~/.local/share/patch-cc/backups/<version>.orig`. To read the JS a given binary
-carries without patching anything:
+```bash
+uv run scripts/corpus.py            # what upstream serves, against what is held
+uv run scripts/corpus.py sync       # fetch every published build the set lacks
+```
+
+`status` is read-only and exits non-zero when the set is short or damaged. It
+keeps five answers apart rather than counting them together ([CONDUCT.md](CONDUCT.md)):
+`ok`, `missing` (served, not held), `unpublished` (never served — a gap, not a
+miss), `unverifiable` (held, no longer served, so nothing left to check it
+against) and `corrupt` (held, and not what upstream shipped). `sync` acts on
+`missing` alone: a `corrupt` entry is evidence that something here damaged a
+binary, and replacing it silently would destroy the only sign of that — delete it
+and re-run to take a fresh copy.
+
+The span walked is the oldest build held → the channel's head, so no version
+number is written down anywhere; `--since` moves the floor, and builds already
+held are read, tabled and swept whatever the span says. A machine holding
+nothing has made no statement about how far back it cares, so the walk starts at
+the head — `--since` is how a fresh checkout asks for history. A build this machine
+never patched can still join the old way — save its pristine native binary as
+`~/.local/share/patch-cc/backups/<version>.orig` — and the next run verifies it
+like any other. To read the JS a given binary carries without patching anything:
 
 ```bash
 patch-cc extract ~/.local/share/patch-cc/backups/2.1.233.orig > 2.1.233.js

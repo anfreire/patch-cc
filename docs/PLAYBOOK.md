@@ -602,7 +602,9 @@ that broke a patch along with every note.
 
 6. Sweep the fix over the versions you still have. `doctor` takes a path, and
    every binary patch-cc has ever touched left a pristine copy in
-   `~/.local/share/patch-cc/backups/`:
+   `~/.local/share/patch-cc/backups/` — which is only the builds *this machine*
+   patched, so `uv run scripts/corpus.py sync` first to make that the published
+   set ([corpus.md](corpus.md)):
 
    ```bash
    sweep() { for b in ~/.local/share/patch-cc/backups/*.orig; do

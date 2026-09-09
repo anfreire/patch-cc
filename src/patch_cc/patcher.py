@@ -166,7 +166,14 @@ def run_patches(
     return current, results
 
 
-def _backup_dir() -> Path:
+def backup_dir() -> Path:
+    """Where pristine copies live -- and so where the corpus lives.
+
+    Public because it has a second reader outside this module: ``scripts/corpus.py``
+    fills that same directory from the release channel (docs/corpus.md). Spelling
+    the path there instead would be a copy that ignores ``XDG_DATA_HOME``, which
+    is the half of this that a second home always drops.
+    """
     base = os.environ.get("XDG_DATA_HOME")
     root = Path(base) if base else Path.home() / ".local" / "share"
     return root / "patch-cc" / "backups"
@@ -181,7 +188,7 @@ def backup_path_for(install: locate.Installation) -> Path:
     alone, so a short hash of the absolute path is mixed in to keep their
     backups distinct.
     """
-    root = _backup_dir()
+    root = backup_dir()
     if install.version:
         return root / f"{install.binary.name}.orig"
     digest = hashlib.sha256(str(install.binary.resolve()).encode()).hexdigest()[:8]
