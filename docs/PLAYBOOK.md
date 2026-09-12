@@ -215,7 +215,7 @@ Anything the binary can enumerate for us, it does:
   three entries when 2.1.229 renamed the module out from under it
   (`…/src/entrypoints/cli.js` → `…/cli`) and the tool stopped opening binaries
   at all — with the answer already parsed, already carried on the dataclass, and
-  already written back unchanged by `rebuild`. A list that only ever grows is
+  already written back unchanged by `rewrite`. A list that only ever grows is
   answering the wrong question. An id past the end of the module table is a
   corrupt blob and raises; there is deliberately no fallback to guessing by
   name, because a container that cannot say which module it runs is not one to

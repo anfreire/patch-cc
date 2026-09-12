@@ -86,15 +86,10 @@ def write_section(path: str, payload: bytes, out_path: str | None = None) -> Non
     if section is None:
         raise MachOError(f"no {SEGMENT},{SECTION} section")
 
-    # Grow the segment when the payload is larger; when it is *smaller* -- which
-    # is the usual case, since dropping the entrypoint bytecode shrinks the blob
-    # by ~200 MB -- the segment is left at its original file size and the freed
-    # bytes become dead space. So a patched macOS binary runs correctly (the
-    # bytecode is gone) but is not smaller, unlike the in-place ELF write.
-    # Reclaiming it means shrinking the segment's file/virtual size and letting
-    # LIEF re-lay `__LINKEDIT`, which cannot be validated without a Mac; until
-    # then the honest statement is docs/INTERNALS.md's platform note, not a
-    # silent claim that the file shrank.
+    # The rewrite only ever grows the blob (docs/INTERNALS.md): the edited
+    # modules' text is appended and nothing pristine moves. Growth is what
+    # LIEF's Mach-O support does well -- page-aligned and bounded -- so the
+    # two containers behave the same way.
     grow = len(payload) - int(section.size)
     if grow > 0:
         page = _page_size(lief, binary)

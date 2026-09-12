@@ -1,12 +1,12 @@
 # Internals
 
-How patch-cc gets from a Claude binary to a patched, smaller one.
+How patch-cc gets from a Claude binary to a patched one.
 
 ## The shape of a native Claude binary
 
 Claude Code ships as a [Bun](https://bun.sh) single-file executable. The whole
-app — a ~20 MB minified JS bundle plus a few asset modules — is embedded in the
-binary:
+app — 34 MB of minified JS on 2.1.269, plus a few asset modules — is embedded
+in the binary:
 
 - **Linux**: an ELF section named `.bun`
 - **macOS**: a Mach-O section `__BUN,__bun`
@@ -21,77 +21,93 @@ treats every module the container declares to be JavaScript as one surface.
 
 ```
 .bun section
-└── [u64 size prefix]           (u32 on Bun < 1.3.4)
+└── [u64 size prefix]
     └── Bun blob
         ├── payload arena       name / contents / sourcemap / bytecode / ... bytes,
-        │                       plus the record chain's own payloads (Bun >= 1.4.1)
-        ├── module table        N records × 52 bytes (36 on old Bun)
-        ├── record chain        flag-gated records (Bun >= 1.4.1), see below
+        │                       and whatever else the builder placed there
+        ├── module table        N records × 52 bytes
+        ├── records             flag-gated, see below
         ├── compileExecArgv
         ├── offsets struct       32 bytes: byteCount, modulesPtr, entryId, argvPtr, flags
         └── "\n---- Bun! ----\n"  15-byte trailer
 ```
 
 Every pointer is a `(u32 offset, u32 length)` pair relative to the blob start,
-and pointers live in exactly three places: the module table, the offsets
-struct, and the record chain. That is what makes rewriting tractable — move a
-payload, fix the handful of pointers that describe it.
-
-Two invariants ride on payload *positions* rather than pointers, and `rebuild`
-preserves both by keeping every payload's inter-payload gap and its offset
-phase modulo 128 — so a rebuild with no edits reproduces the blob byte for
-byte, and one with edits moves payloads only in whole alignment steps:
-
-- Bytecode payloads (module bytecode, and the record chain's bytecode blobs)
-  sit at blob `offset % 128 == 120`, which is 128-byte alignment once the
-  section's 8-byte size prefix is in front. Bun ≥ 1.4.1 deserializes bytecode
-  in place and calls misalignment "a runtime assertion error or segfault"
-  (`append_bytecode_aligned`); older Bun quietly tolerated the phase drift the
-  rewriter used to introduce.
-- `count_z` payloads (names, contents) carry a NUL terminator in the gap
-  after them.
-
-A module record (new 52-byte format) is six such pairs — `name`, `contents`,
-`sourcemap`, `bytecode`, `moduleInfo`, `bytecodeOriginPath` — followed by four
-`u8` flags (`encoding`, `loader`, `moduleFormat`, `side`).
+and Bun reads a payload *through* its pointer — bytes nothing points at are
+ignored. A module record is six such pairs — `name`, `contents`, `sourcemap`,
+`bytecode`, `moduleInfo`, `bytecodeOriginPath` — followed by four `u8` flags
+(`encoding`, `loader`, `moduleFormat`, `side`).
 
 Code: `src/patch_cc/bun/blob.py`.
 
-## The record chain (Bun ≥ 1.4.1)
+## The rule: never move a pristine byte
 
-2.1.246 moved to Bun 1.4.1, whose `StandaloneModuleGraph.rs` chains optional
-records directly after the module table, each announced by a new `flags` bit
-and read back in flag order:
+The loader's contract above is the only thing the rewrite rides. How the
+builder lays the arena out, and which records follow the table, is the half of
+the format that changes with Bun — and a rewrite that re-laid the arena would
+have to find and re-aim every pointer in the blob, including pointers in records
+it had never seen. Bun owes that to nobody, and it is where this tool broke
+twice: 2.1.246 (Bun 1.4.1) chained records after the table, and a chain-blind
+compaction shipped a binary that segfaulted in Bun's graph loader while every
+module compared equal; 2.1.269 (Bun 1.4.3) chained two more, and the chain
+walker written after 2.1.246 — mirroring Bun's reader record for record, with a
+whitelist of the bits it knew — refused the build outright. Mirroring the
+reader more completely is a repair that can never be finished.
 
-| bit | record |
-|---|---|
-| 5 | `[u32; modules]` — each module's WTF hash of its source text (0 = none) |
-| 6 | `u32 count`, then `count` × `{u32 id, ptr}` — internal-module bytecode |
-| 7 | one pointer: the **shared bytecode string table** |
-| 8 | `u32` — how many leading modules load before the first `import()` |
-| 9 | one pointer: the string table `moduleInfo` bodies index |
+So `rewrite` moves nothing. An edited module's text is appended after the
+arena (NUL-terminated, as Bun's own `count_z` payloads are); the module table
+and everything after it are copied verbatim, shifted by a multiple of 128 so
+every phase inside them holds; then the pointers that name what changed are
+re-aimed:
 
-The pointers point back into the arena: the shared string table (~9.9 MB on
-2.1.246) is the string data **every chunk's bytecode references by ordinal**,
-so it is load-bearing for every module we did *not* touch. The hash is JSC's
-SourceCodeKey hash, how a launch that runs from bytecode avoids paging in
-source text just to hash it.
+- the edited module's `contents` pair, at its text;
+- its `bytecode` pair, at nothing ([below](#the-bytecode-and-why-we-unlink-it));
+- its source-hash word, to 0 — upstream's own "none, compute it" — because the
+  hash keys the text in JSC and the pristine text's hash must not describe ours;
+- the offsets struct's `modulesPtr` and `argvPtr`, along with the bytes they
+  name.
 
-patch-cc parses the chain record for record (`_parse_records` — a build with
-none of the bits, which is every Bun before 1.4.1, walks zero records through
-the same code), carries the pointed-at payloads through `rebuild` like any
-module payload, copies the whole tail between table and offsets struct
-verbatim, and re-points the pointers in place. Two details matter:
+Every other byte, and every other pointer, is exactly where it was. A record
+patch-cc has never heard of comes through the same copy and still points where
+it did, because what it points at did not move; the arena's payloads keep their
+128-byte phase — Bun deserializes bytecode in place and calls misalignment "a
+runtime assertion error or segfault" — because the arena is not shifted at all.
 
-- An **edited** module's hash word is zeroed — upstream's own "none, compute
-  it" value — because the pristine text's hash must not key our bytes in JSC's
-  source cache.
-- **Unknown** record bits are refused at parse: a record of unknown size
-  cannot be walked past nor re-pointed, and rewriting around it is exactly how
-  a graph gets corrupted. 2.1.246 against patch-cc ≤ 0.4.0 is the lesson: the
-  chain-blind rewriter dropped the records and zero-filled the string table
-  while every *module* round-tripped byte-perfect — matcher-green, dead at
-  launch, `SIGSEGV` from inside Bun's graph loader.
+What has to be *known* is exactly what is touched: the offsets struct, two
+pairs and the loader byte of a module record, and the one record that
+describes a module's text — its hash, first after the table when bit 5 of
+`flags` says there is one. The rest of `flags` travels verbatim, bits this code
+has never seen included, with one exception. Bit 4 declares every module's
+text to lie in one contiguous run: Bun's runtime hints the kernel to drop those
+pages after startup, and its comment forbids any other region inside the run.
+The appended text is outside it, so the bit is cleared — Bun documents the
+absent flag as an older layout it reads — rather than left asserting something
+false.
+
+## The records after the table
+
+Bun ≥ 1.4.1 chains optional records directly after the module table, each
+announced by a `flags` bit and read back in flag order. What has been seen so
+far, for orientation — patch-cc parses none of it beyond the first:
+
+| bit | record | since |
+|---|---|---|
+| 5 | `[u32; modules]` — each module's WTF hash of its source text (0 = none) | 2.1.246 |
+| 6 | `u32 count`, then `count` × `{u32 id, ptr}` — internal-module bytecode | 2.1.246 |
+| 7 | one pointer: the shared bytecode string table every chunk's bytecode indexes | 2.1.246 |
+| 8 | `u32` — how many leading modules load before the first `import()` | 2.1.248 |
+| 9 | one pointer: the string table `moduleInfo` bodies index | 2.1.248 |
+| 11 | one pointer to a pre-linked ES module graph, then `u32 count` and `count` × `u32` file index | 2.1.269 |
+| 12 | `u32 flags, u32 value` — runtime options (a JIT policy) | 2.1.269 |
+
+Three shapes across the 17 published builds from 2.1.246 to 2.1.269, and none
+of them a code change here: each is bytes in the tail and payloads in the
+arena, and both are copied where they are. The one record whose *meaning* the
+rewrite leans on is bit 11's: a module in the pre-linked graph ships no
+`moduleInfo` body, and its imports and exports are read from the graph rather
+than its text — which holds for an edited module too, because a patch never
+touches module linkage (the syntax gate reads past it,
+[PLAYBOOK.md](PLAYBOOK.md#the-many-module-surface)).
 
 ## The 2.1.242 split, and the patchable surface
 
@@ -127,64 +143,52 @@ what `status` reads, named by the offsets struct's `entry_point_id` — the same
 index Bun resolves it by. Its *name* is upstream's to change and we never read
 it: 2.1.229 renamed it `/$bunfs/root/src/entrypoints/cli.js` → `/$bunfs/root/cli`.
 
-## The bytecode, and why we drop it
+## The bytecode, and why we unlink it
 
-Modules carry precompiled Bun **bytecode** — most of the binary. Before the
-split only the entry module had any (~half of it); the code-split builds carry it
-on nearly every chunk (232 MB of 377 on 2.1.243, across ~1,375 modules).
+Modules carry precompiled Bun **bytecode**. Before the split only the entry
+module had any (~half of the binary); the code-split builds carry it on nearly
+every chunk (78 MB of 219 on 2.1.268, across ~1,650 modules), and the records
+after the table name another 14 MB — the internal modules' bytecode and the
+shared string table — that no edit touches.
 
-Any edit to a module's `contents` invalidates *that module's* bytecode; Bun
-detects the mismatch and recompiles that module from source at launch. So keeping
-a stale copy buys nothing — the recompile is paid either way — and dropping it
-reclaims the space and guarantees our edits are what runs. patch-cc drops the
-bytecode of exactly the modules it edited (`rebuild` over `changed_modules`) and
-leaves every untouched module its bytecode and its fast start — which is why
-the shared bytecode string table those modules' bytecode indexes
-([the record chain](#the-record-chain-bun--141)) is never droppable. On Linux,
-where the ELF section is rewritten in place, the binary is smaller by exactly
-the edited modules' bytecode.
+Bun runs a module's bytecode in preference to its source, so an edited module's
+bytecode would run the *unpatched* code. `rewrite` therefore aims the edited
+modules' `bytecode` pair at nothing, and Bun compiles those modules from source
+at launch; every untouched module keeps its bytecode and its fast start. The
+stale bytes themselves stay in the file, unreferenced: reclaiming them would
+mean moving everything after them, which is the compaction the rule above
+forbids. A patched binary is therefore a few percent *larger* than the
+original — the edited modules' text, appended — never smaller.
 
-Measured on 2.1.243, the full patch set:
+Measured on 2.1.268, the default patch set:
 
-| binary | size | bytecode | startup |
-|---|---|---|---|
-| pristine | 378 MB | 232 MB (every module) | ~13 ms `--version` |
-| patched (edited modules' bytecode dropped) | **295 MB** | 150 MB (untouched modules) | ~15 ms |
+| binary | size | bytecode the table names |
+|---|---|---|
+| pristine | 219 MB | 78 MB, every module |
+| patched (11 modules edited) | 228 MB | 51 MB, the untouched modules |
 
-The 83 MB reclaimed is the ~45 edited modules' bytecode; the rest stays, which is
-why a split-build patched binary is smaller but not the *half* a patched monolith
-was. The recompile is now per lazily-imported edited module rather than the whole
-app at once, so startup barely moves. Read the current figures off any binary
-with `patch-cc status` rather than off this table — the bytecode total grows every
-few builds.
+Read the current figures off any binary with `patch-cc status` rather than off
+this table. Startup does not move: an edited module recompiles from source
+whether its bytecode is dropped or merely unlinked, and the recompile is per
+lazily-imported edited module rather than the whole app at once.
 
-The size story is the **ELF** path: the `.bun` section is rewritten in place, so
-the dropped bytecode is genuinely reclaimed (`container.verify` refuses a Linux
-write that did not shrink by about that much). On **macOS** the file keeps its
-original size: `macho.py` grows a segment but never shrinks one, so the freed
-bytes stay as dead space. The binary still runs correctly (the bytecode is gone),
-it is just not smaller — reclaiming it means shrinking the Mach-O segment and
-re-laying `__LINKEDIT`, which is not done yet.
+Every write asserts each **edited** module names no bytecode in the binary it
+produced (`container.verify`), and `doctor`'s smoke bake writes a temp binary
+through the same `container.write` and *executes* it, so the sweep exercises
+the assert, and the loader itself, on every corpus build. If a future Bun build
+makes bytecode authoritative over source, that assert is the tripwire — every
+edit would silently no-op otherwise.
 
-Every write asserts each **edited** module carries `bytecode == 0` in the binary
-it produced (`container.verify`, beside the round-trip check), and `patch-cc
-status` reports the total for an installed one. `doctor`'s dry run cannot — a
-clean bundle still has all its bytecode by definition — but its smoke bake
-writes a temp binary through the same `container.write` and then *executes* it,
-so the sweep exercises the assert, and the loader itself, on every corpus
-build. If a future Bun build makes bytecode authoritative over source, that
-assert is the tripwire — every edit would silently no-op otherwise.
-
-## Writing it back without ballooning
+## Writing it back
 
 `.bun` is the last *allocated* ELF section; only non-allocated metadata
 (`.comment`, `.symtab`, `.strtab`, `.shstrtab`) follows it. patch-cc rewrites
 the ELF bytes in place:
 
-1. Splice the new (smaller) blob over the old `.bun` bytes.
+1. Splice the new, larger blob over the old `.bun` bytes.
 2. Shift `e_shoff`, `e_phoff`, and the trailing non-alloc sections/segments by
-   the size delta.
-3. Grow or shrink the containing `PT_LOAD` segment's `filesz`/`memsz` to match.
+   the size delta, rounded up to the strictest alignment among them.
+3. Grow the containing `PT_LOAD` segment's `filesz`/`memsz` to match.
 
 `.bun` keeps its original file offset. This is deliberately *not* done with a
 general ELF library: LIEF rebuilds the binary and relocates `.bun` so its file
@@ -195,9 +199,11 @@ Guards refuse anything that could corrupt the mapping: allocated sections after
 `.bun`, growth into a header table, an unrelated spanning segment, or a
 misaligned `PT_LOAD` shift. If any fires, the write aborts rather than guesses.
 
-Code: `src/patch_cc/bun/elf.py`. macOS uses LIEF (`macho.py`) — Mach-O segment
-growth is page-aligned and bounded, with no relocation pathology, and every
-edit is followed by an ad-hoc `codesign` (mandatory on Apple Silicon).
+Code: `src/patch_cc/bun/elf.py`. macOS uses LIEF (`macho.py`): growing a
+Mach-O segment is page-aligned and bounded, with no relocation pathology, and
+growth is the only thing the rewrite ever asks of a container, so the two
+platforms behave the same way. Every edit is followed by an ad-hoc `codesign`
+(mandatory on Apple Silicon).
 
 ## The manifest
 
@@ -240,7 +246,7 @@ rather than from a store of their own.
 - Patching always starts from that pristine copy, so re-applying never stacks
   edits on edits, and an apply where **nothing lands** — every selected patch
   broken, so the manifest would claim nothing — leaves the binary untouched
-  entirely (stripping bytecode for nothing would only slow startup). A patch
+  entirely (unlinking bytecode for nothing would only slow startup). A patch
   that *lands* still writes even where it changed no bytes, because landing
   includes an override the build already satisfies: the manifest records what
   was asked and verified present, so `status` can report it.
@@ -252,14 +258,15 @@ rather than from a store of their own.
   and dropped rather than aborting the run. See
   [PLAYBOOK.md](PLAYBOOK.md#the-syntax-gate).
 - Every write is verified: patch-cc re-extracts the JS from the binary it just
-  wrote and asserts every module equals what it meant to write, that each
-  module it edited carries no leftover bytecode to run instead of the edit, and
-  that the graph around the modules survived — the record chain kept its
-  length and flags, its arena payloads (the shared bytecode string table above
-  all) round-trip byte-identical, and every source-hash word is the pristine
-  one, except an edited module's, which must be zero. The chain checks exist
-  because 2.1.246 failed *only* there: every module compared equal while the
-  written binary was dead.
+  wrote and asserts every module equals what it meant to write, and that the
+  blob is the pristine blob plus exactly the intended edits — the arena
+  byte-identical in place; the module table and the tail verbatim one shift
+  along, except each edited module's two pairs and hash word; the flags less
+  the contiguity bit; the same entry module and the same `compileExecArgv`.
+  Nothing is enumerated, so a record this code has never parsed is covered by
+  the same comparison as the ones it has. The check exists because 2.1.246
+  failed *only* there: every module compared equal while the written binary
+  was dead.
 - Patching a binary that is already marked, when no pristine backup exists, is
   refused outright — there is nothing clean to start from, and our edits change
   lengths, so a second pass would corrupt rather than update. `restore` or a

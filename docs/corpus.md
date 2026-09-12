@@ -87,12 +87,16 @@ never the size:
 | `2.1.263` | 216 MB | `26d020351e8112f4006790f3cfce43b4c9df0c1bb1d0e542364d64151b81d5ba` |
 | `2.1.265` | 216 MB | `e14738e3a58d1fc6ccc23b9c919451b4846bc27074a3fb48db976a7d595bdeeb` |
 | `2.1.266` | 216 MB | `19842705e989393fce936804df6d2ab034860e24b8f8880357981d87ffd83fac` |
+| `2.1.267` | 217 MB | `0399c793ff571d5946ef923d80b4f330d05ac4b6842a6b0775468f5d389403c0` |
+| `2.1.268` | 219 MB | `9691a2b7bd796712ca8cffb8e32e54ff7fc45b662540233171a16a94a0425653` |
+| `2.1.269` | 220 MB | `25e44883f54419569a3d739f38cbbdaebe83b09895da0f343e1b003710a4775b` |
 
 This set covers the span the playbook's tree-move measurements were taken over
 (`2.1.210` → `2.1.233`), the 2.1.242 split, the 2.1.246 stream-store
-migration, the 2.1.247 selector reads it was read back through, and the
+migration, the 2.1.247 selector reads it was read back through, the
 2.1.257 compiled transcript renderer that retired live thinking's render half,
-so each is re-checkable here rather than historical.
+and the 2.1.269 Bun 1.4.3 records that retired the container's record walker, so
+each is re-checkable here rather than historical.
 
 ## Keep it complete
 

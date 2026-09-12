@@ -150,9 +150,9 @@ def _check_growth_is_safe(elf: Elf, bun: Section, shifted: list[Section]) -> Non
     # `shifted` and would be moved) or, for `SHT_NOBITS`, by virtual address.
     # A `.bss`-shaped section carries no file bytes, so it never enters
     # `shifted` and slipped past this check entirely -- yet it lives in the tail
-    # of the containing `PT_LOAD`'s `memsz`, which a shrink resizes, so a smaller
-    # `.bun` could truncate its virtual range. Same promise for both: we do not
-    # move an allocated section, and INTERNALS says so.
+    # of the containing `PT_LOAD`'s `memsz`, which the resize changes, so its
+    # virtual range would be moved or overlapped. Same promise for both: we do
+    # not move an allocated section, and INTERNALS says so.
     virt_end = bun.addr + bun.size
     alloc = [s for s in shifted if s.is_alloc]
     alloc += [
@@ -222,13 +222,8 @@ def write_section(buf: bytes, payload: bytes, name: str = ".bun") -> bytes:
     if delta:
         _check_growth_is_safe(elf, bun, shifted)
         step = _alignment_step(elf, end, shifted)
-        if step > 1:
-            # Grow generously / shrink conservatively so offsets stay congruent.
-            delta = (
-                (delta + step - 1) // step * step
-                if delta > 0
-                else -((-delta) // step * step)
-            )
+        # Rounded up so every moved offset stays congruent to its alignment.
+        delta = -(-delta // step) * step
 
     container = _containing_load(elf, bun)
     if delta and container is None:

@@ -3,8 +3,7 @@
 Two different questions, deliberately kept apart:
 
 * **status** -- is the *installed* binary patched right now? Answered by the
-  manifest comment every patched bundle ends with, and the bytecode-stripped
-  invariant.
+  manifest comment every patched bundle ends with.
 * **dryrun** -- would our patches still apply to *this* bundle? Answered by
   running every patch and reporting per-step hits, so a silently drifted
   matcher shows up as a concrete "reducer.message_stop missed" instead of a
@@ -35,7 +34,8 @@ from .patches.agents import INHERIT, BuiltinAgent, discover_agents, discover_mod
 
 @dataclass(slots=True)
 class Status:
-    bytecode_stripped: bool
+    #: The bytecode the module table names: every module's on a pristine
+    #: binary, the untouched modules' on a patched one (docs/INTERNALS.md).
     bytecode_size: int
     #: Parsed manifest for binaries patched by this tool; ``None`` when the
     #: binary is pristine.
@@ -59,7 +59,6 @@ class Status:
 
 def status(bundle: Bundle) -> Status:
     return Status(
-        bytecode_stripped=bundle.bytecode_size == 0,
         bytecode_size=bundle.bytecode_size,
         manifest=read_manifest(bundle.source),
     )

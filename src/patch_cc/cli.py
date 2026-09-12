@@ -480,16 +480,9 @@ def _print_report(report: patcher.PatchReport, options: Options) -> None:
         console.print("  [dim]Run `patch-cc doctor` for anchor details.[/dim]")
         return
 
-    saved = report.original_size - report.patched_size
-    size_note = (
-        f"{abs(saved) / 1e6:.0f} MB smaller than original"
-        if saved > 0
-        else f"{abs(saved) / 1e6:.0f} MB larger than original"
-        if saved < 0
-        else "same size as original"
-    )
+    grown = (report.patched_size - report.original_size) / 1e6
     console.print()
-    ok(f"Wrote {report.output}  ({report.patched_size / 1e6:.0f} MB, {size_note})")
+    ok(f"Wrote {report.output}  ({report.patched_size / 1e6:.0f} MB, {grown:+.0f} MB)")
     if report.backup:
         console.print(f"  [dim]backup: {report.backup}[/dim]")
     if "codex-models" in report.landed_ids:
@@ -585,8 +578,7 @@ def cmd_status(args) -> int:
                 style, note = gateway_note(codex["port"])
                 console.print(f"  gateway:   [{style}]{note}[/{style}]")
     console.print(
-        f"  bytecode:  "
-        f"{'stripped' if st.bytecode_stripped else f'{st.bytecode_size / 1e6:.0f} MB present'}"
+        f"  bytecode:  {st.bytecode_size / 1e6:.0f} MB named by the module table"
     )
     if backup := patcher.existing_backup(install):
         console.print(f"  backup:    {backup}")

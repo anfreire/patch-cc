@@ -1519,12 +1519,12 @@ class MenuApp:
             line.append("No patch changed anything; binary left untouched.")
             lines.append(line)
         else:
-            saved = (report.original_size - report.patched_size) / 1e6
+            grown = (report.patched_size - report.original_size) / 1e6
             line = Text()
             line.append("  ✓ ", style="green")
             line.append(f"Saved to {report.output.name}", style="bold")
             line.append(
-                f"  ·  {report.patched_size / 1e6:.0f} MB ({saved:.0f} MB smaller)",
+                f"  ·  {report.patched_size / 1e6:.0f} MB ({grown:+.0f} MB)",
                 style="dim",
             )
             lines.append(line)

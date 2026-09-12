@@ -74,6 +74,18 @@ shape that already absorbs every case, found rather than bolted on.
   React idioms before it was cut to three insertions on the tool-use list
   ([PLAYBOOK.md](PLAYBOOK.md#live-thinking--streamingpy)).
 
+- **Never move a byte you did not write.** The container is the second worked
+  case of the rule above. Bun reads a payload through its pointer and ignores
+  what nothing points at; a rewrite that re-lays the arena has to re-aim every
+  pointer in the blob, including ones in records it has never seen, and Bun
+  adds such records whenever it likes — 2.1.246 corrupted one, 2.1.269 was
+  refused over one, and the whitelist of known records between the two could
+  never be finished. So the write appends what changed and copies everything
+  else where it was, and needs to know only what it touches
+  ([INTERNALS.md](INTERNALS.md#the-rule-never-move-a-pristine-byte)). The price
+  is a binary a few percent larger instead of smaller; the size win was the
+  claim that bought the fragility.
+
 - **Port faithfully.** When you change a patch, verify its output against a real
   bundle — byte-identical where behaviour must not change. `doctor` over the
   archived corpus is that check, and the *diff* between two sweeps is the half
@@ -84,5 +96,5 @@ shape that already absorbs every case, found rather than bolted on.
 - **The user controls commits and releases.** Don't commit, push, or publish
   unless asked.
 
-The binary format, and why the ELF write is in-place and the bytecode is
-dropped: [INTERNALS.md](INTERNALS.md).
+The binary format, and why the write appends rather than compacts:
+[INTERNALS.md](INTERNALS.md).

@@ -14,7 +14,7 @@ No Node, no Bun.
 uvx patch-cc                   # fullscreen menu, no install needed
 ```
 
-![patch-cc: pick tweaks, register a Codex model, pin the Plan agent to it, bake — the patched binary is 161 MB smaller](https://raw.githubusercontent.com/anfreire/patch-cc/main/docs/demo.gif)
+![patch-cc: pick tweaks, register a Codex model, pin the Plan agent to it, bake](https://raw.githubusercontent.com/anfreire/patch-cc/main/docs/demo.gif)
 
 ## Requirements
 
@@ -164,19 +164,20 @@ uvx patch-cc apply --brand --model Explore=haiku
 `uvx patch-cc status` tells you whether the current binary is patched, and the
 startup name / `--version` marker are visible tells too.
 
-## Why native-only, and why it stays small
+## Why native-only, and what the write does
 
 Claude Code now ships only as a Bun single-file executable; the npm package is a
 wrapper that downloads it. patch-cc edits the JavaScript modules embedded in the
-binary's `.bun` section in place — since 2.1.242 the app is code-split across
-~1,300 of them, and patch-cc treats every one as a single surface. It also drops
-the stale precompiled bytecode of the modules it edits — editing a module's
-source invalidates its bytecode anyway — so on Linux, where the ELF section is
-rewritten in place, a patched binary is *smaller* than the original, not larger
-(83 MB smaller on 2.1.243). (On macOS the freed bytes are not yet reclaimed, so
-the file keeps its size; it still runs correctly.)
-[docs/INTERNALS.md](docs/INTERNALS.md#the-bytecode-and-why-we-drop-it) has the
-measurements; `patch-cc status` has yours.
+binary's `.bun` section — since 2.1.242 the app is code-split across ~1,300 of
+them, and patch-cc treats every one as a single surface. The write never moves a
+byte of the original: each edited module's source is appended and its stale
+precompiled bytecode is unlinked (editing a module's source invalidates its
+bytecode anyway), so a patched binary is a few percent larger than the original,
+and everything else the binary carries — Bun's own records, however its format
+grows — is exactly where it was. That is what keeps the container layer out of
+the way when Bun changes its format under Claude.
+[docs/INTERNALS.md](docs/INTERNALS.md#the-rule-never-move-a-pristine-byte) has
+the reasoning; `patch-cc status` has your numbers.
 
 See [docs/INTERNALS.md](docs/INTERNALS.md) for the container format and
 [docs/PLAYBOOK.md](docs/PLAYBOOK.md) for repairing a patch after an update.
