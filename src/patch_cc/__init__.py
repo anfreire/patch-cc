@@ -1,3 +1,3 @@
 """patch-cc: an interactive patcher for the Claude Code native binary."""
 
-__version__ = "0.5.2"
+__version__ = "0.6.0"
