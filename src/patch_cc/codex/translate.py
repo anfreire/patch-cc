@@ -395,6 +395,33 @@ def _media_part(source: Any) -> dict[str, Any]:
     }
 
 
+def _without_pattern(schema: Any) -> Any:
+    """The same schema with every ``pattern`` gone, at any depth.
+
+    The backend validates each ``pattern`` as a regex of its own dialect and
+    refuses the whole request when one does not parse -- ``Invalid schema for
+    function 'X': '...' is not a 'regex'``, an ``invalid_function_parameters``
+    400 that kills the turn before the model is reached, for a tool the model
+    was never going to call. Claude Code ships one: the Artifact tool's
+    ``^(?!__.*__$)[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}"\\\\./[\\]]{1,200}$``. Measured
+    against the live backend, a lookahead alone is accepted and a ``\\p{...}``
+    class alone is accepted; together they are refused -- the Unicode class
+    appears to pick an engine that has no lookaround, and there is no reason to
+    think that is the only such pair.
+
+    So this drops the key rather than testing the regex: with ``strict`` false
+    the backend enforces none of them anyway, which makes ``pattern`` a hint the
+    model reads in the schema text either way -- and dropping it uniformly costs
+    a hint no one was owed, while keeping it costs whole turns on a dialect we
+    would have to track upstream of two vendors at once.
+    """
+    if isinstance(schema, dict):
+        return {k: _without_pattern(v) for k, v in schema.items() if k != "pattern"}
+    if isinstance(schema, list):
+        return [_without_pattern(item) for item in schema]
+    return schema
+
+
 def _translate_tools(tools: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for tool in tools or []:
@@ -407,7 +434,7 @@ def _translate_tools(tools: Any) -> list[dict[str, Any]]:
                 "type": "function",
                 "name": name,
                 "description": tool.get("description") or "",
-                "parameters": schema,
+                "parameters": _without_pattern(schema),
                 "strict": False,
             }
         )
