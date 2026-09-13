@@ -208,12 +208,22 @@ def _model_from_entry(entry: dict[str, object]) -> CodexModel | None:
     The Codex backend says ``slug``/``display_name`` (measured; ``title`` was an
     older spelling), the generic OpenAI shape says ``id``/``name`` -- all four are
     read so a renamed key downgrades a label instead of blanking it.
+
+    The window is two keys for the same reason. The Codex backend reports both
+    ``max_context_window`` -- the ceiling the model will actually serve -- and
+    ``context_window``, the smaller default a client starts at (measured on a
+    Codex plan: 872000 against 272000 for gpt-6-astra and the gpt-5.6 family,
+    while gpt-5.5 and gpt-5.3-codex-spark report the two equal). Reading the
+    default understates the window by two thirds: requests well past it are
+    served, and Claude Code -- which is told the number and believes it -- reads
+    a long session as full while the model is still answering. The ceiling is
+    the honest one, and where only one key exists it is the only one.
     """
     model_id = entry.get("slug") or entry.get("id")
     if not isinstance(model_id, str) or not model_id:
         return None
     name = entry.get("display_name") or entry.get("title") or entry.get("name")
-    window = entry.get("context_window")
+    window = entry.get("max_context_window") or entry.get("context_window")
     levels = entry.get("supported_reasoning_levels")
     return CodexModel(
         id=model_id,
