@@ -21,8 +21,10 @@ memoization fashion, and each repair bought exactly one build: every one of
 those was a claim only this patch needed (the builds and the spellings are in
 docs/PLAYBOOK.md). The reducer half, anchored on the API's own event strings,
 has not moved since it became an insertion at dispatch points. Only that half
-is left, plus the one request-side default that makes the API stream summary
-text at all.
+is left, plus the one setting default that makes the API stream summary text
+at all -- which broke once itself (2.1.277), on the spelling of the ternary
+that chose the request's display, and now rests on the setting upstream
+chooses it from.
 
 Two facts about upstream's list are relied on, both measured on the corpus.
 The renderer keys a virtual message off its block's ``id`` when the block has
@@ -43,98 +45,50 @@ from .. import js
 from ..js import Edit, Source
 from .base import GROUP_OUTPUT, Options, Outcome, Patch
 
-# -------------------------------------------------------------- display mode
+# --------------------------------------------------------- summaries setting
 
-#: The env var *name* is the witness; whatever expression reads it is
-#: upstream's to spell, and is never described here. Spelling such a path is
-#: what killed `org-label` on 2.1.228, and this is the same variable one
-#: migration behind.
-_DISABLE_THINKING = "CLAUDE_CODE_DISABLE_THINKING"
-_DISPLAY = "display"
-_SUMMARIZED = '"summarized"'
-
-
-def _defaulting(read: js.Node) -> js.Node:
-    """The value a `display` read stands for -- itself, or the ``??`` around it.
-
-    Two spellings of one value: a bare read, or a read upstream has already
-    given a fallback of its own. The coalesce is a node the grammar names,
-    where splitting the text on ``??`` was a claim about an operator free to
-    appear anywhere else in the expression -- and the same split then rebuilt
-    the replacement, so one stray ``??`` in front would have been silently
-    dropped from what we wrote back.
-    """
-    parent = read.parent
-    if parent is not None and parent.type == "binary_expression":
-        operator = parent.child_by_field_name("operator")
-        if (
-            operator is not None
-            and js.text(operator) == "??"
-            and parent.child_by_field_name("left") == read
-        ):
-            return parent
-    return read
-
-
-def _chooses(node: js.Node) -> bool:
-    """Is this the ``display`` read the request's thinking value is chosen from?
-
-    The read is the identity and :func:`_defaulting` is what the arm is, so the
-    property is a field of a member read rather than the tail of a spelling --
-    ``.display`` at the end of some text says nothing about what precedes it,
-    which is the half upstream regenerates every build.
-    """
-    if not js.reads(node, _DISPLAY):
-        return False
-    value = _defaulting(node)
-    chosen = value.parent
-    return (
-        chosen is not None
-        and chosen.type == "ternary_expression"
-        and chosen.child_by_field_name("consequence") == value
-        and (alternative := chosen.child_by_field_name("alternative")) is not None
-        and js.text(alternative) == "void 0"
-    )
+#: The setting upstream reads to decide whether a request asks the API for
+#: summarised thinking text -- a name upstream wrote and publishes in its
+#: settings schema, and the one fact every consequence is routed off: the
+#: request's `display`, the beta header withheld while it is on, the `updates`
+#: display the request otherwise falls back to. The request site those reach
+#: is where upstream respells things; the name is what it keeps.
+_SHOW_SUMMARIES = "showThinkingSummaries"
 
 
 def _step_display_mode(source: Source, outcome: Outcome) -> Source:
-    """Default the thinking request to `summarized`.
+    """Default the `showThinkingSummaries` setting on.
 
     Without a display mode in the request the API streams signature-only (or
     late) thinking, so the live row starves -- worst on short thinks. Upstream
-    only asks for summaries when the `showThinkingSummaries` setting is on;
-    default it on instead.
+    asks for ``"summarized"`` exactly when this setting is on, so the setting's
+    read gains a default and the request is never touched: what the display
+    value becomes, where it is chosen and how that choice is spelled are
+    upstream's. 2.1.277 respelled all three at once -- the ternary that chose
+    the value flipped its branches and grew a ``"highlights"`` mode inside the
+    chosen side -- and the locator that stood here, reached through the env-var
+    read sharing the value's ``let`` (comma-fusion, the minifier's) and asking
+    for the consequence of a ternary whose alternative was ``void 0`` (the
+    branch layout, upstream's), found nothing with every anchor standing.
 
-    Two shapes used to be spelled out here -- an inline env check, and the
-    2.1.216 form that hoists it into its own variable and gates the display
-    behind extra feature-helper calls. They are one edit: the display value
-    gains a default. Whatever guards reach it, and in whatever order the
-    declaration lists them, is untouched because it is never matched.
+    The read is one on every build in the corpus, spelled ``settings().name??!1``
+    on all of them, and none of that is claimed: every member read is defaulted,
+    as `spinner-tips` reads its setting, and a write is left alone for the
+    reason it gives. An explicit ``false`` in the user's settings still wins,
+    which the request-side default this replaced could not honour.
     """
     step = outcome.step("display-mode")
     edits = []
-    seen: set[int] = set()
-
-    for node in source.find(_DISABLE_THINKING):
-        declaration = js.up(node, "lexical_declaration", "variable_declaration")
-        if declaration is None or declaration.id in seen:
+    for node in source.find(_SHOW_SUMMARIES):
+        read = node.parent
+        if read is None or not js.reads(read, _SHOW_SUMMARIES) or js.written(read):
             continue
-        # The value itself, not the ternary that chooses it: what is edited is
-        # what identified it, so there is no second reach for the same child.
-        display = js.first(declaration, _chooses)
-        if display is None:
-            continue
-        seen.add(declaration.id)
-        value = _defaulting(display)
         step.candidates += 1
         step.applied += 1
-        # Built from the read, so the default we write is a default *of that
-        # read* whichever of the two shapes this build ships. An upstream that
-        # already asks for summaries is the goal achieved, not a rewrite owed.
-        summarized = f"{js.text(display)}??{_SUMMARIZED}"
-        if js.text(value) == summarized:
-            continue
-        edits.append(Edit.replace(value, summarized))
+        # Parenthesised, so it is a default *of that read* inside whatever
+        # expression this build spells around it: a bare ``??`` may not stand
+        # beside ``&&`` or ``||``.
+        edits.append(Edit.replace(read, f"({js.text(read)}??!0)"))
     return source.apply(edits)
 
 
@@ -508,7 +462,7 @@ PATCHES = [
             f'case"{_THINKING_DELTA}"',
             f'case"{_THINKING_TYPES[0]}"',
             f'"{_CONTENT_BLOCK_START}"',
-            _DISABLE_THINKING,
+            _SHOW_SUMMARIES,
         ),
     ),
 ]

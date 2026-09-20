@@ -123,6 +123,20 @@ The tree removes the *mechanical* fragility. It does not decide these:
   the bundle one identity, the point where that path is fed, where a twin of
   the path owes one per step, each a claim only the patch needs.
   `live-thinking` is the worked case ([below](#live-thinking--streamingpy)).
+- **Anchor on the fact, not on a consumer of it.** When upstream keeps a fact
+  under a name of its own — a setting, a header, a store field — and every
+  site that acts on it sits downstream of one read, default or flip *that
+  read* and leave the sites alone: the sites are where upstream respells
+  things, the name is what it keeps. `display-mode` paid for the lesson on
+  2.1.277. It defaulted the request's thinking display at the site that chose
+  it, reached through the env-var read that shared the value's `let`
+  (comma-fusion, the minifier's) and identified as the consequence of a
+  ternary whose alternative was `void 0` (the branch layout, upstream's); the
+  build flipped the branches and grew a `"highlights"` mode inside the value,
+  and the step found nothing with every anchor standing — while the fact,
+  `showThinkingSummaries`, was one member read in one spelling on every build
+  in the corpus. Where a value *must* be identified at its site, ask what it
+  can *be* (`js.values`), never which branch it sits on.
 - **Match an identity by the weakest claim that still proves it; hold a rewrite
   to the exact node.** The two jobs pull in opposite directions.
   `thinking-inline`'s null-guard neutralises only a `return` that answers
@@ -505,8 +519,9 @@ Most patches are one rewrite. `live-thinking` is five named sub-steps, because
 a single hit count cannot tell "all landed" from "half silently drifted", and
 each records its own `candidates`/`applied`:
 
-- **`display-mode`** — the request asks the API for summarised thinking text;
-  without it the stream carries signatures and no words.
+- **`display-mode`** — the `showThinkingSummaries` setting defaults on, so the
+  request asks the API for summarised thinking text; without it the stream
+  carries signatures and no words.
 - **`reducer`** — the stream reducer is found together with the options bag it
   is handed the live tool-use setter in, and our binding of that setter is
   added to the bag.
@@ -881,15 +896,24 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
     drew beside the landed block for as long as the answer streamed. A
     tool-use entry at the same index is left exactly as the twin leaves it,
     and a list with nothing to drop is returned as it was.
-  - **`display-mode`** defaults the request's thinking display to
-    `"summarized"`; without it the API only streams summary text when the
-    `showThinkingSummaries` setting is on. Two shapes used to be spelled out —
-    the inline env check and the 2.1.216 form that hoists it behind
-    feature-helper calls. They are one edit: the display value gains a
-    default, and whatever guards reach it are untouched because they are never
-    matched. The env-var *name* is the witness; whatever reads it is never
-    described, so a hoisted `process.env` (the same migration that killed
-    `org-label` on 2.1.228) costs nothing here.
+  - **`display-mode`** defaults the `showThinkingSummaries` setting on. Upstream
+    asks the API for `"summarized"` exactly when that setting is on, and routes
+    every consequence — the request's display, the beta header it withholds
+    while summaries are on, the `updates` display the request otherwise falls
+    back to — off one read of it, so that read
+    gains a default (`(settings().showThinkingSummaries??!0)`) and the request
+    is never touched. Every member read of the name, as `spinner-tips` reads
+    its setting, and a write is skipped for the reason it gives; the read is
+    one on every build in the corpus, spelled `settings().name??!1` on all of
+    them, and none of that is claimed. An explicit `false` in the user's
+    settings still wins. Until 2.1.277 this step defaulted the request's
+    display value instead, reached through the `CLAUDE_CODE_DISABLE_THINKING`
+    read that shared its `let` and identified as the consequence of a ternary
+    whose alternative was `void 0`; that build flipped the branches
+    (`!x?void 0:…`) and grew a `"highlights"` mode inside the chosen value,
+    and the step read *found nothing* with every anchor standing. Both claims
+    were syntax between the anchors ([What still takes
+    judgement](#what-still-takes-judgement)).
 
   **What is deliberately not done.** No state of ours: upstream's store carries
   a `streamingThinking` slot with a setter and a thirty-second linger, written
@@ -936,7 +960,10 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
   slots (2.1.257 — not the compiler arriving, which had cached the
   conversation render since 2.1.247, but this component joining it). The
   reducer half, anchored on the API's event strings, has not moved since it
-  became an insertion at dispatch points. Prefer claims upstream cannot drop
+  became an insertion at dispatch points. The display default broke once
+  (2.1.277), on the branch layout of the ternary that chose the request's
+  value, and moved off the request onto the setting upstream chooses it from.
+  Prefer claims upstream cannot drop
   without paying for them — a dispatch string, a store's field name, the twin's
   own list — over claims only this patch needs, which is what CONDUCT's *ride
   what upstream ships working* asks. What was cut, and why each piece was a
