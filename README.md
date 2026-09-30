@@ -99,8 +99,8 @@ alongside your Claude ones — in the `/model` picker, as a subagent override,
 with `/effort` driving how hard they think. It is two halves: a patch that
 teaches your binary to accept and route the models you pick, and a small
 localhost **gateway** that translates between Claude Code and OpenAI. Only the
-models you pick are diverted — every Anthropic request stays byte-identical,
-so your Claude plan is untouched. Nothing extra to install: the gateway is pure
+models you pick are diverted — no Anthropic-model request ever goes anywhere
+but Anthropic, so your Claude plan is untouched. Nothing extra to install: the gateway is pure
 Python and ships with patch-cc; you just sign in to a ChatGPT or Codex plan.
 
 ```bash
@@ -145,6 +145,16 @@ claude --model gpt-5.6-sol               # the full id also works, as does /mode
   Anthropic-model request is ever diverted to it. The Codex ones that *are*
   still carry Claude Code's own auth header — the gateway ignores it and never
   forwards it, but treat the port as trusted: whatever binds it first sees it.
+- **The gateway keeps no conversation, and says so.** Claude Code's newest
+  first-party betas assume a server that remembers — Message Threads send only
+  what is new each turn, kept reminders are sent once — and it turns them on
+  for a Codex model too. The gateway refuses them the way the API refuses what
+  it can't do, and Claude Code resends the turn whole: three quick local
+  retries on a session's first Codex request. Threads are refused per model,
+  so your Claude models keep theirs. Kept reminders and mid-conversation
+  system messages are a per-session switch in Claude Code, so once a session
+  has used a Codex model its Claude requests go in the classic shape too — the
+  same content, without that caching shortcut.
 - After a Claude update, **re-bake** — the patch reverts with the binary — but
   the gateway is separate and keeps running. Until you do, a Codex model you had
   saved as your default reads as unavailable; the models live in the patch.

@@ -615,6 +615,15 @@ class ResponsesToAnthropic:
     ``message_start`` is deliberately withheld until the first content: the
     Responses stream can fail before any output, and emitting a 200 ``message_start``
     first would mask that upstream error as an empty success.
+
+    ``input_estimate`` is what ``message_start`` reports until the final count
+    arrives. The Anthropic API knows its input count up front and Claude Code
+    is built on that: it reads the status line's usage as each assistant
+    message begins and re-reads only once a later message lands, never at
+    ``message_delta`` -- so zeros there are a 0% meter for the whole call, and
+    this estimate is what the meter shows (2.1.285). The final count at
+    ``message_delta`` then replaces it everywhere the binary keeps usage;
+    :func:`anthropic_usage` has the one token that guarantees it can.
     """
 
     def __init__(
@@ -623,6 +632,7 @@ class ResponsesToAnthropic:
         response_model_id: str,
         message_id: str = "msg_pcc",
         tool_required: dict[str, set[str]] | None = None,
+        input_estimate: int = 0,
     ):
         self.model_id = response_model_id
         self.message_id = message_id
@@ -636,7 +646,7 @@ class ResponsesToAnthropic:
         self._tool_flushed = False
         self._pending_sig = ""
         self._finish = "end_turn"
-        self._usage: dict[str, int] | None = None
+        self._usage: dict[str, int] | None = {"input_tokens": input_estimate}
         #: Set once a terminal upstream event arrives; the non-stream collector
         #: reads it to tell a finished turn from a silently dropped connection.
         self.completed = False
@@ -652,6 +662,8 @@ class ResponsesToAnthropic:
             yield from self._on_text_delta(event.get("delta") or "")
         elif kind == "response.reasoning_summary_text.delta":
             yield from self._on_thinking_delta(event.get("delta") or "")
+        elif kind == "response.reasoning_summary_part.added":
+            yield from self._on_summary_part()
         elif kind == "response.function_call_arguments.delta":
             self._tool_raw += event.get("delta") or ""
         elif kind == "response.output_item.done":
@@ -718,6 +730,22 @@ class ResponsesToAnthropic:
             index=self._index,
             delta={"type": "thinking_delta", "thinking": delta},
         )
+
+    def _on_summary_part(self) -> Iterator[dict[str, Any]]:
+        """A new summary part begins: set it apart from the text already there.
+
+        Codex streams a reasoning item's summary as parts -- ``**Title**``, then
+        prose, or several titled sections -- and consecutive parts' deltas carry
+        no separator, so joined as they came the closing ``**`` of one part met
+        the opening ``**`` of the next as ``****`` and the renderer showed it
+        (``Selecting status colors****Choosing minimal color change``). A blank
+        line is what the same summary looks like returned whole, where each
+        part is its own string. Only a part that follows text needs one; the
+        first part opens the block. Sent as a delta of its own so the live
+        render and the stored block agree.
+        """
+        if self._open == "thinking" and self._block and self._block["thinking"]:
+            yield from self._on_thinking_delta("\n\n")
 
     def _on_item_done(self, item: dict[str, Any]) -> Iterator[dict[str, Any]]:
         kind = item.get("type")
@@ -821,9 +849,10 @@ class ResponsesToAnthropic:
                 "model": self.model_id,
                 "stop_reason": None,
                 "stop_sequence": None,
-                # Zeroes here, since Responses reports usage only at completion.
-                # Shaped by the one helper anyway, so the two events and the
-                # non-streaming message can never describe usage differently.
+                # The caller's estimate here (see the class docstring), since
+                # Responses reports usage only at completion. Shaped by the one
+                # helper anyway, so the two events and the non-streaming
+                # message can never describe usage differently.
                 "usage": anthropic_usage(self._usage),
             },
         )
@@ -835,10 +864,10 @@ class ResponsesToAnthropic:
             "message_delta",
             delta={"stop_reason": self._finish, "stop_sequence": None},
             # The whole count, not just the output half. Responses does not know
-            # the input total until it completes, so `message_start` carried
-            # zeroes and this is the only event that can say what a turn cost --
-            # sending output alone left every streamed turn (which is every real
-            # turn) reading as nothing in, nothing cached.
+            # the input total until it completes, so `message_start` carried an
+            # estimate and this is the only event that can say what a turn cost
+            # -- sending output alone left every streamed turn (which is every
+            # real turn) reading as nothing in, nothing cached.
             usage=anthropic_usage(self._usage),
         )
         yield _sse("message_stop")
@@ -887,16 +916,12 @@ def _incomplete_reason(event: dict[str, Any]) -> str | None:
 
 
 def anthropic_usage(usage: dict[str, int] | None) -> dict[str, int]:
-    """Split the Responses total-input count into Anthropic's cache buckets.
-
-    Responses reports ``input_tokens`` as the *total* including cache; Anthropic
-    wants the fresh input alone plus the cache read/write split out.
-    """
+    """Claude Code 2.1.285 ignores zero input counts when merging usage."""
     usage = usage or {}
     cached = usage.get("cached_tokens", 0)
     written = usage.get("cache_write_tokens", 0)
     return {
-        "input_tokens": max(0, usage.get("input_tokens", 0) - cached - written),
+        "input_tokens": max(1, usage.get("input_tokens", 0) - cached - written),
         "output_tokens": usage.get("output_tokens", 0),
         "cache_creation_input_tokens": written,
         "cache_read_input_tokens": cached,

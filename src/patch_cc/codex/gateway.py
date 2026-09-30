@@ -12,10 +12,12 @@ request.
 The port is the one thing that has to agree with the binary, and the binary is
 where it is read from -- ``serve`` asks the manifest, not a file of its own.
 
-Nothing here is per-session state either: context is re-sent each turn (exactly
-as Claude Code already does with Anthropic), and OpenAI's own
-``prompt_cache_key`` carries the prefix cache. That is the whole reason this file
-is short.
+Nothing here is per-session state either: context is re-sent each turn, and
+OpenAI's own ``prompt_cache_key`` carries the prefix cache. Claude Code's newest
+first-party betas assume otherwise -- a thread the server continues, a reminder
+it keeps -- and are refused with the answers its own fallbacks listen for
+(:data:`_REFUSED_BETAS`, :meth:`_Handler._messages`), so it resends the turn
+whole. That is the whole reason this file is short.
 """
 
 from __future__ import annotations
@@ -42,6 +44,48 @@ _UPSTREAM_TIMEOUT = 600
 #: ``_UPSTREAM_TIMEOUT``, a truncated chunk. All of them are a finished turn to
 #: report, never a traceback and never a stream that simply stops.
 _TURN_FAILED = (translate.ResponsesError, OSError, http.client.HTTPException)
+
+#: The ``anthropic-beta`` values this gateway refuses, by name prefix (the date
+#: suffix is a beta's version, the name is the feature). Claude Code sends them
+#: to what it takes for the first-party API, which a diverted Codex request is:
+#: the redirect rewrites the URL after every such decision. Under
+#: ``mid-conversation-system-`` the system prompt's dynamic half rides as
+#: ``role: "system"`` messages and, under its ``-clear-at-`` sibling, a
+#: reminder is sent once and kept server-side until then -- memory this gateway
+#: does not have, and a wire shape this translator was not written for.
+#: Refused in the API's own words for a beta it does not know
+#: (:func:`unknown_beta`), the client drops each, resends the turn in the
+#: classic shape and stops asking for the session; nothing reaches OpenAI, and
+#: the session's Claude-model requests go classic too, since that switch is
+#: the client's and per session. Message Threads is not here on purpose:
+#: refusing its *header* would switch threads off for those Claude models as
+#: well, while refusing the ``thread`` *field* is answered per model
+#: (:meth:`_Handler._messages`).
+_REFUSED_BETAS = ("mid-conversation-system-",)
+
+
+def refused_betas(header: str | None) -> list[str]:
+    """The values of an ``anthropic-beta`` header that :data:`_REFUSED_BETAS` name."""
+    return [
+        value
+        for value in (value.strip() for value in (header or "").split(","))
+        if value.startswith(_REFUSED_BETAS)
+    ]
+
+
+def unknown_beta(values: list[str]) -> str:
+    """The API's own refusal of betas it does not know, for ``values``.
+
+    The wording is the contract: Claude Code recognises a refused beta by the
+    header's name and the value both appearing in the message, and the clear-at
+    one also by this exact prefix on the message's first line. Any other 400 is
+    an error shown to the user, with the beta sent again next turn.
+    """
+    listed = ", ".join(f"`{value}`" for value in values)
+    return (
+        f"Unexpected value(s) {listed} for the anthropic-beta header. Please "
+        "consult our documentation at https://docs.anthropic.com/en/api/versioning"
+    )
 
 
 class Gateway:
@@ -211,6 +255,27 @@ class _Handler(BaseHTTPRequestHandler):
                 400, "invalid_request_error", "request body must name a model"
             )
 
+        # A threaded turn carries only the messages since the last reply and
+        # expects the server to hold the rest; accepted, the second turn
+        # arrived here as one user message (2.1.285). The API's error code for
+        # a server that cannot thread is the one answer Claude Code has a
+        # fallback for that stays with *this* model: it marks the model
+        # stateless for the session, resends the turn whole, and keeps
+        # threading its Claude models. Refused before anything is translated,
+        # as are the betas of `_REFUSED_BETAS`; each costs one local retry.
+        if body.get("thread") is not None:
+            return self._error(
+                400,
+                "invalid_request_error",
+                "Message Threads are not supported here: this gateway keeps no "
+                "conversation state, so every request must carry the whole "
+                "conversation",
+                details={"error_code": "thread_unsupported_request"},
+            )
+        refused = refused_betas(self.headers.get("anthropic-beta"))
+        if refused:
+            return self._error(400, "invalid_request_error", unknown_beta(refused))
+
         # A tool the request *requires* but the backend cannot run is refused
         # here, not silently dropped: dropping it left the model answering a
         # forced WebSearch from memory. A 400 does not read as retryable, so the
@@ -260,6 +325,7 @@ class _Handler(BaseHTTPRequestHandler):
                 response_model_id=model,
                 message_id=f"msg_{uuid.uuid4().hex}",
                 tool_required=translate.tool_required_props(body),
+                input_estimate=estimate_tokens(body),
             )
             if body.get("stream"):
                 self._stream(upstream, conv)
@@ -324,9 +390,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, status: int, kind: str, message: str) -> None:
+    def _error(self, status: int, kind: str, message: str, **fields: object) -> None:
         self._json(
-            status, {"type": "error", "error": {"type": kind, "message": message}}
+            status,
+            {"type": "error", "error": {"type": kind, "message": message, **fields}},
         )
 
 
