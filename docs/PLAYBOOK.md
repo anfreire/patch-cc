@@ -1123,14 +1123,11 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
   `safeParse` whose fallback is **empty** (`models:[]`): one malformed entry
   strips every model, Claude's included, of its metadata. So the step emits
   only fields the schema declares — the required four (`id`, `family`,
-  `display_name`, `provider_ids.first_party`), `capabilities` always (empty
-  when the plan reported no efforts: the runtime catalogue is the raw literal,
-  never the parsed one with its `.default([])`, and its capability check reads
-  `entry?.capabilities.includes(name)` unguarded — an entry without the array
-  ended the session at its first question on 2.1.285, while an empty one
-  answers "not declared" and falls through to the provider default), plus
-  values with something true to record. `default_effort` is deliberately not
-  among them: the binary
+  `display_name`, `provider_ids.first_party`), `capabilities` always — empty
+  when the plan reported no efforts, because the binary reads the array
+  unguarded (`_registry_entry`'s docstring has the crash) — plus values with
+  something true to record. `default_effort` is deliberately not among them:
+  the binary
   resolves a missing default as `high` (`?.default_effort??"high"` — the very
   default its own flagships declare), so omission makes `/effort auto` and an
   untouched session mean on these models exactly what they mean on Opus,

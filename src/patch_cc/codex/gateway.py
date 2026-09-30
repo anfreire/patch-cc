@@ -13,13 +13,11 @@ The port is the one thing that has to agree with the binary, and the binary is
 where it is read from -- ``serve`` asks the manifest, not a file of its own.
 
 Nothing here is per-session state either: context is re-sent each turn, and
-OpenAI's own ``prompt_cache_key`` carries the prefix cache. Claude Code does
-re-send it -- once it has been told this server keeps nothing. Its newest
-first-party betas assume a server that remembers the conversation, and it turns
-them on for any model it believes it is sending to Anthropic, which a diverted
-Codex model is; the gateway refuses those the way the API refuses a beta it does
-not know, and Claude Code's own fallback resends the turn whole
-(:data:`_STATEFUL_BETAS`). That is the whole reason this file is short.
+OpenAI's own ``prompt_cache_key`` carries the prefix cache. Claude Code's newest
+first-party betas assume otherwise -- a thread the server continues, a reminder
+it keeps -- and are refused with the answers its own fallbacks listen for
+(:data:`_REFUSED_BETAS`, :meth:`_Handler._messages`), so it resends the turn
+whole. That is the whole reason this file is short.
 """
 
 from __future__ import annotations
@@ -47,54 +45,41 @@ _UPSTREAM_TIMEOUT = 600
 #: report, never a traceback and never a stream that simply stops.
 _TURN_FAILED = (translate.ResponsesError, OSError, http.client.HTTPException)
 
-#: The ``anthropic-beta`` values this gateway refuses, by name prefix -- the date
-#: suffix is a beta's version, the name is the feature. Claude Code sends them
-#: only to what it takes for the first-party API, and a diverted Codex request
-#: qualifies: the redirect rewrites the URL after every such decision is made.
-#: Accepted by a server that keeps no conversation, they lose it:
-#:
-#: * **Message Threads** (``message-threads-``): the first request creates a
-#:   thread carrying everything, and every later one is ``thread: {type:
-#:   "continue", previous_message_id}`` with only the messages since that
-#:   reply. Measured on 2.1.285 against a gateway that accepted it: the third
-#:   turn arrived as one user message and a 49-character system message, and
-#:   the ~1k-token turns in a user's transcript -- the model "not seeing" the
-#:   conversation -- were exactly this.
-#: * **Mid-conversation system** (``mid-conversation-system-``, one prefix for
-#:   the beta and its ``-clear-at-`` sibling): the system prompt's dynamic half
-#:   rides as ``role: "system"`` messages, a reminder sent with ``clear_at`` is
-#:   sent once and kept server-side until then, and the same family carries
-#:   tool changes inside messages. Only ``clear_at`` needs memory; the rest is
-#:   a wire shape this translator was not written for, and the client's
-#:   fallback for the whole family is the classic one it was.
-#:
-#: The refusal is the one answer Claude Code has a fallback for: it drops the
-#: beta, resends the same turn stateless -- whole history, system prompt, tools
-#: -- and stops asking, for the session (threads, kept reminders) or the
-#: conversation (mid-conversation system). One beta per retry, so a session's
-#: first Codex request costs three local round-trips, none of which reaches
-#: OpenAI. The price is named: the switch is process-wide, so those features
-#: stay off for the Claude-model requests of that session too.
-_STATEFUL_BETAS = ("message-threads-", "mid-conversation-system-")
+#: The ``anthropic-beta`` values this gateway refuses, by name prefix (the date
+#: suffix is a beta's version, the name is the feature). Claude Code sends them
+#: to what it takes for the first-party API, which a diverted Codex request is:
+#: the redirect rewrites the URL after every such decision. Under
+#: ``mid-conversation-system-`` the system prompt's dynamic half rides as
+#: ``role: "system"`` messages and, under its ``-clear-at-`` sibling, a
+#: reminder is sent once and kept server-side until then -- memory this gateway
+#: does not have, and a wire shape this translator was not written for.
+#: Refused in the API's own words for a beta it does not know
+#: (:func:`unknown_beta`), the client drops each, resends the turn in the
+#: classic shape and stops asking for the session; nothing reaches OpenAI, and
+#: the session's Claude-model requests go classic too, since that switch is
+#: the client's and per session. Message Threads is not here on purpose:
+#: refusing its *header* would switch threads off for those Claude models as
+#: well, while refusing the ``thread`` *field* is answered per model
+#: (:meth:`_Handler._messages`).
+_REFUSED_BETAS = ("mid-conversation-system-",)
 
 
-def stateful_betas(header: str | None) -> list[str]:
-    """The values of an ``anthropic-beta`` header that :data:`_STATEFUL_BETAS` name."""
+def refused_betas(header: str | None) -> list[str]:
+    """The values of an ``anthropic-beta`` header that :data:`_REFUSED_BETAS` name."""
     return [
         value
         for value in (value.strip() for value in (header or "").split(","))
-        if value.startswith(_STATEFUL_BETAS)
+        if value.startswith(_REFUSED_BETAS)
     ]
 
 
 def unknown_beta(values: list[str]) -> str:
     """The API's own refusal of betas it does not know, for ``values``.
 
-    The wording is the contract. Claude Code recognises a refused beta by the
-    header's name and the value both appearing in the message, and the
-    clear-at one also by this exact prefix on the message's first line; any
-    other 400 is shown to the user as an error, with the beta sent again next
-    turn.
+    The wording is the contract: Claude Code recognises a refused beta by the
+    header's name and the value both appearing in the message, and the clear-at
+    one also by this exact prefix on the message's first line. Any other 400 is
+    an error shown to the user, with the beta sent again next turn.
     """
     listed = ", ".join(f"`{value}`" for value in values)
     return (
@@ -270,11 +255,24 @@ class _Handler(BaseHTTPRequestHandler):
                 400, "invalid_request_error", "request body must name a model"
             )
 
-        # A beta that means "remember this conversation for me" cannot be
-        # honoured here, and accepting it anyway is how a turn arrives carrying
-        # only its newest message. Refused before anything is translated, in
-        # the words the client's fallback listens for (`_STATEFUL_BETAS`).
-        refused = stateful_betas(self.headers.get("anthropic-beta"))
+        # A threaded turn carries only the messages since the last reply and
+        # expects the server to hold the rest; accepted, the second turn
+        # arrived here as one user message (2.1.285). The API's error code for
+        # a server that cannot thread is the one answer Claude Code has a
+        # fallback for that stays with *this* model: it marks the model
+        # stateless for the session, resends the turn whole, and keeps
+        # threading its Claude models. Refused before anything is translated,
+        # as are the betas of `_REFUSED_BETAS`; each costs one local retry.
+        if body.get("thread") is not None:
+            return self._error(
+                400,
+                "invalid_request_error",
+                "Message Threads are not supported here: this gateway keeps no "
+                "conversation state, so every request must carry the whole "
+                "conversation",
+                details={"error_code": "thread_unsupported_request"},
+            )
+        refused = refused_betas(self.headers.get("anthropic-beta"))
         if refused:
             return self._error(400, "invalid_request_error", unknown_beta(refused))
 
@@ -392,9 +390,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, status: int, kind: str, message: str) -> None:
+    def _error(self, status: int, kind: str, message: str, **fields: object) -> None:
         self._json(
-            status, {"type": "error", "error": {"type": kind, "message": message}}
+            status,
+            {"type": "error", "error": {"type": kind, "message": message, **fields}},
         )
 
 

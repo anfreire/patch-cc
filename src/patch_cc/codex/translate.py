@@ -616,15 +616,14 @@ class ResponsesToAnthropic:
     Responses stream can fail before any output, and emitting a 200 ``message_start``
     first would mask that upstream error as an empty success.
 
-    ``input_estimate`` is what ``message_start`` reports as the input count
-    until the real one arrives. The Anthropic API knows its input count up
-    front and Claude Code is built on that: the ``message_start`` usage is
-    stamped on every content block as it streams, and the status line reads the
-    newest block's. Responses reports usage only at completion, so zeros there
-    read as an empty context -- 0% mid-turn, and again after every tool call,
-    until the ``message_delta`` figure was next looked at. An estimate is a
-    provisional number where a provisional number is expected; the exact one in
-    ``message_delta`` replaces it.
+    ``input_estimate`` is what ``message_start`` reports until the exact count
+    arrives. The Anthropic API knows its input count up front and Claude Code
+    is built on that: it refreshes the status line once per assistant message,
+    on the first content block, and never re-reads at ``message_delta`` -- so
+    zeros there are a 0% meter for the whole turn, and this estimate is what
+    the meter shows (2.1.285). Every *decision* the binary makes from usage
+    reads the exact split, which ``message_delta`` carries in the one place
+    the binary prefers (:func:`final_usage`).
     """
 
     def __init__(
@@ -698,7 +697,7 @@ class ResponsesToAnthropic:
             "content": [b for b in self.blocks if _nonempty_block(b)],
             "stop_reason": self._finish,
             "stop_sequence": None,
-            "usage": anthropic_usage(self._usage),
+            "usage": final_usage(self._usage),
         }
 
     # -- event handlers ------------------------------------------------------
@@ -867,11 +866,11 @@ class ResponsesToAnthropic:
             "message_delta",
             delta={"stop_reason": self._finish, "stop_sequence": None},
             # The whole count, not just the output half. Responses does not know
-            # the input total until it completes, so `message_start` carried
-            # zeroes and this is the only event that can say what a turn cost --
-            # sending output alone left every streamed turn (which is every real
-            # turn) reading as nothing in, nothing cached.
-            usage=anthropic_usage(self._usage),
+            # the input total until it completes, so `message_start` carried an
+            # estimate and this is the only event that can say what a turn cost
+            # -- sending output alone left every streamed turn (which is every
+            # real turn) reading as nothing in, nothing cached.
+            usage=final_usage(self._usage),
         )
         yield _sse("message_stop")
 
@@ -933,6 +932,25 @@ def anthropic_usage(usage: dict[str, int] | None) -> dict[str, int]:
         "cache_creation_input_tokens": written,
         "cache_read_input_tokens": cached,
     }
+
+
+def final_usage(usage: dict[str, int] | None) -> dict[str, Any]:
+    """The exact usage, as ``message_delta`` and the non-streaming message carry it.
+
+    The split at top level, and once more as the turn's one ``iterations``
+    entry. Claude Code merges a ``message_delta`` count into its running one
+    only when it is above zero, so a fully cached turn -- exact fresh input
+    ``0`` -- would keep ``message_start``'s estimate beside the real cache
+    count; but whatever it merged, it reads context from the last valid
+    ``iterations`` entry when one exists. One call is one iteration, so the
+    entry is true, and the estimate outlives the turn nowhere the binary
+    decides from. Its running ``/cost`` total still takes the top-level figure;
+    the corner where that mis-adds is an exact repeat of a prompt whose length
+    is a multiple of 128 tokens, the only way OpenAI's prefix cache covers a
+    whole prompt.
+    """
+    exact = anthropic_usage(usage)
+    return {**exact, "iterations": [{"type": "message", **exact}]}
 
 
 def _failure_error(event: dict[str, Any]) -> dict[str, Any]:
