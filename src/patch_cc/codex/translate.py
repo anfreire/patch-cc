@@ -618,12 +618,12 @@ class ResponsesToAnthropic:
 
     ``input_estimate`` is what ``message_start`` reports until the exact count
     arrives. The Anthropic API knows its input count up front and Claude Code
-    is built on that: it refreshes the status line once per assistant message,
-    on the first content block, and never re-reads at ``message_delta`` -- so
-    zeros there are a 0% meter for the whole turn, and this estimate is what
-    the meter shows (2.1.285). Every *decision* the binary makes from usage
-    reads the exact split, which ``message_delta`` carries in the one place
-    the binary prefers (:func:`final_usage`).
+    is built on that: it reads the status line's usage as each assistant
+    message begins and re-reads only once a later message lands, never at
+    ``message_delta`` -- so zeros there are a 0% meter for the whole call, and
+    this estimate is what the meter shows (2.1.285). The exact count at
+    ``message_delta`` then replaces it everywhere the binary keeps usage;
+    :func:`anthropic_usage` has the one token that guarantees it can.
     """
 
     def __init__(
@@ -646,9 +646,7 @@ class ResponsesToAnthropic:
         self._tool_flushed = False
         self._pending_sig = ""
         self._finish = "end_turn"
-        self._usage: dict[str, int] | None = (
-            {"input_tokens": input_estimate} if input_estimate else None
-        )
+        self._usage: dict[str, int] | None = {"input_tokens": input_estimate}
         #: Set once a terminal upstream event arrives; the non-stream collector
         #: reads it to tell a finished turn from a silently dropped connection.
         self.completed = False
@@ -697,7 +695,7 @@ class ResponsesToAnthropic:
             "content": [b for b in self.blocks if _nonempty_block(b)],
             "stop_reason": self._finish,
             "stop_sequence": None,
-            "usage": final_usage(self._usage),
+            "usage": anthropic_usage(self._usage),
         }
 
     # -- event handlers ------------------------------------------------------
@@ -870,7 +868,7 @@ class ResponsesToAnthropic:
             # estimate and this is the only event that can say what a turn cost
             # -- sending output alone left every streamed turn (which is every
             # real turn) reading as nothing in, nothing cached.
-            usage=final_usage(self._usage),
+            usage=anthropic_usage(self._usage),
         )
         yield _sse("message_stop")
 
@@ -922,35 +920,24 @@ def anthropic_usage(usage: dict[str, int] | None) -> dict[str, int]:
 
     Responses reports ``input_tokens`` as the *total* including cache; Anthropic
     wants the fresh input alone plus the cache read/write split out.
+
+    Fresh input is at least one token. Claude Code folds a ``message_delta``
+    count into ``message_start``'s only when it is above zero -- a zero there
+    means *not reported* -- so a fully cached turn, the one case OpenAI reports
+    no fresh input, would keep the estimate ``message_start`` carried
+    (2.1.285). One token high is the nearest that dialect can say, and the case
+    is an exact repeat of a prompt whose length is a multiple of 128 tokens,
+    the only way OpenAI's prefix cache covers a whole prompt.
     """
     usage = usage or {}
     cached = usage.get("cached_tokens", 0)
     written = usage.get("cache_write_tokens", 0)
     return {
-        "input_tokens": max(0, usage.get("input_tokens", 0) - cached - written),
+        "input_tokens": max(1, usage.get("input_tokens", 0) - cached - written),
         "output_tokens": usage.get("output_tokens", 0),
         "cache_creation_input_tokens": written,
         "cache_read_input_tokens": cached,
     }
-
-
-def final_usage(usage: dict[str, int] | None) -> dict[str, Any]:
-    """The exact usage, as ``message_delta`` and the non-streaming message carry it.
-
-    The split at top level, and once more as the turn's one ``iterations``
-    entry. Claude Code merges a ``message_delta`` count into its running one
-    only when it is above zero, so a fully cached turn -- exact fresh input
-    ``0`` -- would keep ``message_start``'s estimate beside the real cache
-    count; but whatever it merged, it reads context from the last valid
-    ``iterations`` entry when one exists. One call is one iteration, so the
-    entry is true, and the estimate outlives the turn nowhere the binary
-    decides from. Its running ``/cost`` total still takes the top-level figure;
-    the corner where that mis-adds is an exact repeat of a prompt whose length
-    is a multiple of 128 tokens, the only way OpenAI's prefix cache covers a
-    whole prompt.
-    """
-    exact = anthropic_usage(usage)
-    return {**exact, "iterations": [{"type": "message", **exact}]}
 
 
 def _failure_error(event: dict[str, Any]) -> dict[str, Any]:
