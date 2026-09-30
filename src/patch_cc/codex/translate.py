@@ -615,6 +615,16 @@ class ResponsesToAnthropic:
     ``message_start`` is deliberately withheld until the first content: the
     Responses stream can fail before any output, and emitting a 200 ``message_start``
     first would mask that upstream error as an empty success.
+
+    ``input_estimate`` is what ``message_start`` reports as the input count
+    until the real one arrives. The Anthropic API knows its input count up
+    front and Claude Code is built on that: the ``message_start`` usage is
+    stamped on every content block as it streams, and the status line reads the
+    newest block's. Responses reports usage only at completion, so zeros there
+    read as an empty context -- 0% mid-turn, and again after every tool call,
+    until the ``message_delta`` figure was next looked at. An estimate is a
+    provisional number where a provisional number is expected; the exact one in
+    ``message_delta`` replaces it.
     """
 
     def __init__(
@@ -623,6 +633,7 @@ class ResponsesToAnthropic:
         response_model_id: str,
         message_id: str = "msg_pcc",
         tool_required: dict[str, set[str]] | None = None,
+        input_estimate: int = 0,
     ):
         self.model_id = response_model_id
         self.message_id = message_id
@@ -636,7 +647,9 @@ class ResponsesToAnthropic:
         self._tool_flushed = False
         self._pending_sig = ""
         self._finish = "end_turn"
-        self._usage: dict[str, int] | None = None
+        self._usage: dict[str, int] | None = (
+            {"input_tokens": input_estimate} if input_estimate else None
+        )
         #: Set once a terminal upstream event arrives; the non-stream collector
         #: reads it to tell a finished turn from a silently dropped connection.
         self.completed = False
@@ -652,6 +665,8 @@ class ResponsesToAnthropic:
             yield from self._on_text_delta(event.get("delta") or "")
         elif kind == "response.reasoning_summary_text.delta":
             yield from self._on_thinking_delta(event.get("delta") or "")
+        elif kind == "response.reasoning_summary_part.added":
+            yield from self._on_summary_part()
         elif kind == "response.function_call_arguments.delta":
             self._tool_raw += event.get("delta") or ""
         elif kind == "response.output_item.done":
@@ -718,6 +733,22 @@ class ResponsesToAnthropic:
             index=self._index,
             delta={"type": "thinking_delta", "thinking": delta},
         )
+
+    def _on_summary_part(self) -> Iterator[dict[str, Any]]:
+        """A new summary part begins: set it apart from the text already there.
+
+        Codex streams a reasoning item's summary as parts -- ``**Title**``, then
+        prose, or several titled sections -- and consecutive parts' deltas carry
+        no separator, so joined as they came the closing ``**`` of one part met
+        the opening ``**`` of the next as ``****`` and the renderer showed it
+        (``Selecting status colors****Choosing minimal color change``). A blank
+        line is what the same summary looks like returned whole, where each
+        part is its own string. Only a part that follows text needs one; the
+        first part opens the block. Sent as a delta of its own so the live
+        render and the stored block agree.
+        """
+        if self._open == "thinking" and self._block and self._block["thinking"]:
+            yield from self._on_thinking_delta("\n\n")
 
     def _on_item_done(self, item: dict[str, Any]) -> Iterator[dict[str, Any]]:
         kind = item.get("type")
@@ -821,9 +852,10 @@ class ResponsesToAnthropic:
                 "model": self.model_id,
                 "stop_reason": None,
                 "stop_sequence": None,
-                # Zeroes here, since Responses reports usage only at completion.
-                # Shaped by the one helper anyway, so the two events and the
-                # non-streaming message can never describe usage differently.
+                # The caller's estimate here (see the class docstring), since
+                # Responses reports usage only at completion. Shaped by the one
+                # helper anyway, so the two events and the non-streaming
+                # message can never describe usage differently.
                 "usage": anthropic_usage(self._usage),
             },
         )

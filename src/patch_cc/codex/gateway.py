@@ -12,10 +12,14 @@ request.
 The port is the one thing that has to agree with the binary, and the binary is
 where it is read from -- ``serve`` asks the manifest, not a file of its own.
 
-Nothing here is per-session state either: context is re-sent each turn (exactly
-as Claude Code already does with Anthropic), and OpenAI's own
-``prompt_cache_key`` carries the prefix cache. That is the whole reason this file
-is short.
+Nothing here is per-session state either: context is re-sent each turn, and
+OpenAI's own ``prompt_cache_key`` carries the prefix cache. Claude Code does
+re-send it -- once it has been told this server keeps nothing. Its newest
+first-party betas assume a server that remembers the conversation, and it turns
+them on for any model it believes it is sending to Anthropic, which a diverted
+Codex model is; the gateway refuses those the way the API refuses a beta it does
+not know, and Claude Code's own fallback resends the turn whole
+(:data:`_STATEFUL_BETAS`). That is the whole reason this file is short.
 """
 
 from __future__ import annotations
@@ -42,6 +46,61 @@ _UPSTREAM_TIMEOUT = 600
 #: ``_UPSTREAM_TIMEOUT``, a truncated chunk. All of them are a finished turn to
 #: report, never a traceback and never a stream that simply stops.
 _TURN_FAILED = (translate.ResponsesError, OSError, http.client.HTTPException)
+
+#: The ``anthropic-beta`` values this gateway refuses, by name prefix -- the date
+#: suffix is a beta's version, the name is the feature. Claude Code sends them
+#: only to what it takes for the first-party API, and a diverted Codex request
+#: qualifies: the redirect rewrites the URL after every such decision is made.
+#: Accepted by a server that keeps no conversation, they lose it:
+#:
+#: * **Message Threads** (``message-threads-``): the first request creates a
+#:   thread carrying everything, and every later one is ``thread: {type:
+#:   "continue", previous_message_id}`` with only the messages since that
+#:   reply. Measured on 2.1.285 against a gateway that accepted it: the third
+#:   turn arrived as one user message and a 49-character system message, and
+#:   the ~1k-token turns in a user's transcript -- the model "not seeing" the
+#:   conversation -- were exactly this.
+#: * **Mid-conversation system** (``mid-conversation-system-``, one prefix for
+#:   the beta and its ``-clear-at-`` sibling): the system prompt's dynamic half
+#:   rides as ``role: "system"`` messages, a reminder sent with ``clear_at`` is
+#:   sent once and kept server-side until then, and the same family carries
+#:   tool changes inside messages. Only ``clear_at`` needs memory; the rest is
+#:   a wire shape this translator was not written for, and the client's
+#:   fallback for the whole family is the classic one it was.
+#:
+#: The refusal is the one answer Claude Code has a fallback for: it drops the
+#: beta, resends the same turn stateless -- whole history, system prompt, tools
+#: -- and stops asking, for the session (threads, kept reminders) or the
+#: conversation (mid-conversation system). One beta per retry, so a session's
+#: first Codex request costs three local round-trips, none of which reaches
+#: OpenAI. The price is named: the switch is process-wide, so those features
+#: stay off for the Claude-model requests of that session too.
+_STATEFUL_BETAS = ("message-threads-", "mid-conversation-system-")
+
+
+def stateful_betas(header: str | None) -> list[str]:
+    """The values of an ``anthropic-beta`` header that :data:`_STATEFUL_BETAS` name."""
+    return [
+        value
+        for value in (value.strip() for value in (header or "").split(","))
+        if value.startswith(_STATEFUL_BETAS)
+    ]
+
+
+def unknown_beta(values: list[str]) -> str:
+    """The API's own refusal of betas it does not know, for ``values``.
+
+    The wording is the contract. Claude Code recognises a refused beta by the
+    header's name and the value both appearing in the message, and the
+    clear-at one also by this exact prefix on the message's first line; any
+    other 400 is shown to the user as an error, with the beta sent again next
+    turn.
+    """
+    listed = ", ".join(f"`{value}`" for value in values)
+    return (
+        f"Unexpected value(s) {listed} for the anthropic-beta header. Please "
+        "consult our documentation at https://docs.anthropic.com/en/api/versioning"
+    )
 
 
 class Gateway:
@@ -211,6 +270,14 @@ class _Handler(BaseHTTPRequestHandler):
                 400, "invalid_request_error", "request body must name a model"
             )
 
+        # A beta that means "remember this conversation for me" cannot be
+        # honoured here, and accepting it anyway is how a turn arrives carrying
+        # only its newest message. Refused before anything is translated, in
+        # the words the client's fallback listens for (`_STATEFUL_BETAS`).
+        refused = stateful_betas(self.headers.get("anthropic-beta"))
+        if refused:
+            return self._error(400, "invalid_request_error", unknown_beta(refused))
+
         # A tool the request *requires* but the backend cannot run is refused
         # here, not silently dropped: dropping it left the model answering a
         # forced WebSearch from memory. A 400 does not read as retryable, so the
@@ -260,6 +327,7 @@ class _Handler(BaseHTTPRequestHandler):
                 response_model_id=model,
                 message_id=f"msg_{uuid.uuid4().hex}",
                 tool_required=translate.tool_required_props(body),
+                input_estimate=estimate_tokens(body),
             )
             if body.get("stream"):
                 self._stream(upstream, conv)

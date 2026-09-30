@@ -725,6 +725,9 @@ def _effort_capabilities(model) -> list[str]:
     ``supported_reasoning_levels`` and stops at the effort trio: the thinking
     and adaptive flags change how the binary builds requests, and those belong
     to models Anthropic ships.
+
+    The *list* is always emitted, empty included -- an absent capability is a
+    fallback, an absent list is a crash (see :func:`_registry_entry`).
     """
     if not model.efforts:
         return []
@@ -745,10 +748,22 @@ def _registry_entry(model) -> str:
     malformed entry and every model -- Claude's included -- loses its metadata
     (names, capabilities, aliases). So this emits only fields the schema
     declares, shaped exactly as it demands: the required four (``id``,
-    ``family``, ``display_name``, ``provider_ids.first_party``), and beyond
-    them only values with something true to record. JSON is the emitter for
-    the reason :func:`patch_cc.patches.base.js_string` gives: valid JSON is
-    valid JS, escaping included.
+    ``family``, ``display_name``, ``provider_ids.first_party``), plus
+    ``capabilities``, and beyond them only values with something true to
+    record. JSON is the emitter for the reason
+    :func:`patch_cc.patches.base.js_string` gives: valid JSON is valid JS,
+    escaping included.
+
+    ``capabilities`` is emitted even when the plan reported no efforts, because
+    the schema's ``.default([])`` never runs: the runtime catalogue is built
+    from the raw literal, and its capability check reads
+    ``entry?.capabilities.includes(name)`` unguarded (2.1.285). An entry
+    without the array ended the session at its first capability question --
+    ``An internal error ended the session (undefined is not an object
+    (evaluating 'Ga(h(e))?.capabilities.includes'))`` on the first turn of an
+    offline bake -- while an empty array answers every question "not
+    declared", which is the provider fallback :func:`_effort_capabilities`
+    describes.
 
     ``pricing`` and ``max_output_tokens`` are left out on purpose -- their
     readers all guard for absence, a subscription has no per-token price to
@@ -768,9 +783,8 @@ def _registry_entry(model) -> str:
         "display_name": _display_name(model.label),
         "provider_ids": {"first_party": model.id},
         "advisor_rank": _ADVISOR_RANK,
+        "capabilities": _effort_capabilities(model),
     }
-    if capabilities := _effort_capabilities(model):
-        entry["capabilities"] = capabilities
     return json.dumps(entry, separators=(",", ":"))
 
 

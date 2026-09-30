@@ -145,6 +145,13 @@ claude --model gpt-5.6-sol               # the full id also works, as does /mode
   Anthropic-model request is ever diverted to it. The Codex ones that *are*
   still carry Claude Code's own auth header — the gateway ignores it and never
   forwards it, but treat the port as trusted: whatever binds it first sees it.
+- **The gateway keeps no conversation, and says so.** Claude Code's newest
+  first-party betas assume a server that remembers the thread — Message
+  Threads send only what is new each turn, kept reminders are sent once — and
+  it turns them on for a Codex model too. The gateway refuses them the way the
+  API refuses a beta it doesn't know, so Claude Code resends the turn whole
+  and stops asking: three quick local retries on a session's first Codex
+  request, and those features stay off for that session's Claude models too.
 - After a Claude update, **re-bake** — the patch reverts with the binary — but
   the gateway is separate and keeps running. Until you do, a Codex model you had
   saved as your default reads as unavailable; the models live in the patch.
