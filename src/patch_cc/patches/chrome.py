@@ -20,9 +20,9 @@ from .base import (
 #: The setting, which is the whole anchor. Every member *read* that decides
 #: whether tips show reports disabled -- one rule, no paths to enumerate.
 #:
-#: The two rewrites this replaced were a guard (`if(f().x===!1)return;`) and an
-#: expression (`v.x!==!1`), each with its own matcher, each able to drift while
-#: the other carried the patch to green with tips still showing. A read that
+#: The bundle gates tips in two shapes, a guard (`if(f().x===!1)return;`) and
+#: an expression (`v.x!==!1`); a matcher per shape lets either drift while the
+#: other carries the patch to green with tips still showing. A read that
 #: answers "off" satisfies both by arithmetic, and satisfies whatever third path
 #: upstream adds next without being told about it.
 _SPINNER_TIPS = "spinnerTipsEnabled"
@@ -66,9 +66,9 @@ def _disable_spinner_tips(
 ) -> Source:
     """Force spinner tips off by making every member read of the setting say off.
 
-    The two paths this replaced each had their own matcher and either could
-    drift while the other carried the patch to green. One rule reaches every
-    path *of that kind*, and the kind is the honest limit: a read is rewritten
+    One rule reaches every path *of that kind*, where a matcher per path lets
+    either drift while the other carries the patch to green. The kind is the
+    honest limit: a read is rewritten
     by putting `!1` where the read was, so it must be an expression. A
     destructured read (``let{spinnerTipsEnabled:x}=settings()``) binds a name
     instead, has no expression to replace, and would be missed -- and missed
@@ -104,14 +104,14 @@ def _js_template_escape(text: str) -> str:
 def _version_output(source: Source, options: Options, outcome: Outcome) -> Source:
     """Append a marker line to plain ``--version`` output.
 
-    The marker text is the user's ``--suffix`` (default ``(patched)``), inserted
+    The marker text is the menu's marker field (default ``(patched)``), inserted
     just inside the version string after the product name. The site is found as
     the literal that *ends* in that name (:meth:`Source.literals`), not by the
-    ``}.VERSION}`` run that used to lead up to it -- an inlined member read
-    closed between two substitutions, every character of it the minifier's to
-    respell and one hoist (the migration that broke `org-label` on 2.1.228) from
-    moving. The authored tail selects the same two template literals on every
-    build in the corpus and survives whatever upstream writes in front of it.
+    ``}.VERSION}`` run leading up to it -- an inlined member read closed between
+    two substitutions, every character of it the minifier's to respell and one
+    hoist (the kind 2.1.228 made of `IS_DEMO`) from moving. The authored tail
+    selects the same two template literals on every build in the corpus and
+    survives whatever upstream writes in front of it.
     The suffix is escaped for the template literal the tail sits in, and the
     insertion hangs off the fragment's own edge, so no offset is computed.
     """
@@ -267,7 +267,7 @@ def _branding(source: Source, options: Options, outcome: Outcome) -> Source:
 
     # The badge is the patch: it is the product's name where you always see it,
     # the startup banner and the help header, and a rename that misses it is a
-    # rename nobody asked for -- with `status` asserting the new name from the
+    # rename nobody asked for -- with the manifest asserting the new name from the
     # manifest. Required, so a badge that stops being a bold render is loud
     # rather than a green tick over a binary that still says Claude Code. The
     # other two are sentences upstream may reword or drop, and their absence is
@@ -319,12 +319,11 @@ def _interpolates_org(node: js.Node) -> bool:
     segment, and the `/status` row ``{label:"Organization",value:r.organizationName}``
     is the same read outside any template and is not mistaken for one.
 
-    Being *in* a substitution is the whole claim. Ending one was not: the text
-    this used to compare against described how the substitution closes, so
-    ``${x.organizationName??""}`` -- the same composition, one defensive
-    operator later -- read as the anchor being gone while the rewrite still
-    landed, and the patch reported the state no row of the table has a meaning
-    for (candidates 0, applied 1).
+    Being *in* a substitution is the whole claim. Ending one is not: text that
+    describes how the substitution closes reads ``${x.organizationName??""}``
+    -- the same composition, one defensive operator later -- as the anchor
+    being gone while the rewrite still lands, and the patch reports the state
+    no row of the table has a meaning for (candidates 0, applied 1).
     """
     return js.up(node, "template_substitution") is not None
 
@@ -344,13 +343,13 @@ def _org_absence(source: Source) -> str | None:
 
     2.1.246 deleted the welcome-banner variant that composed the segment: the
     surviving banner draws `model · billing` with no org anywhere, which is the
-    hidden state an empty ``--org-label`` asks for. That is upstream retiring
+    hidden state an empty org label asks for. That is upstream retiring
     the surface, not a matcher to repair, so it is said apart from broken --
     and asked of the bundle in hand, never of a version, so a build that draws
-    the segment again un-dims the row with no code change. What this cannot
+    the segment again offers the row with no code change. What this cannot
     tell apart is a composition respelled out of the locator's sight; the cost
-    of that miss is a visibly dimmed row on a build whose screen still shows
-    the segment, and the corpus sweep is what keeps the locator honest.
+    of that miss is a row missing from the menu on a build whose screen still
+    shows the segment, and the corpus sweep is what keeps the locator honest.
     """
     if _org_segments(source):
         return None
@@ -450,7 +449,6 @@ PATCHES = [
     Patch(
         id="spinner-tips",
         title="Disable spinner tips",
-        summary="Stop the loading spinner from showing rotating tips.",
         group=GROUP_CHROME,
         fn=_disable_spinner_tips,
         default=False,
@@ -459,33 +457,27 @@ PATCHES = [
     Patch(
         id="version-marker",
         title="Mark --version as patched",
-        summary="Append a marker line to `claude --version` (custom text via --suffix).",
         group=GROUP_CHROME,
         fn=_version_output,
-        option="--suffix",
         anchors=(_VERSION_TAIL,),
-        setting=string_setting("suffix", "suffix", "version_suffix", DEFAULT_SUFFIX),
+        setting=string_setting("suffix", "version_suffix", DEFAULT_SUFFIX),
     ),
     Patch(
         id="branding",
         title="Custom startup name",
-        summary="Rename the startup/help branding (default: your username's Code).",
         group=GROUP_CHROME,
         fn=_branding,
-        option="--brand",
         anchors=(f'"Welcome to {_BRAND}"', f'"{_BRAND}"'),
-        setting=string_setting("brand", "brand", "brand", DEFAULT_BRAND),
+        setting=string_setting("brand", "brand", DEFAULT_BRAND),
     ),
     Patch(
         id="org-label",
         title="Startup org/email label",
-        summary="Replace or hide the org/email shown after the plan name on the welcome screen.",
         group=GROUP_CHROME,
         fn=_org_label,
         default=False,
-        option="--org-label",
         anchors=(_ORG, _IS_DEMO),
-        setting=string_setting("org", "org_label", "org_label", "", always=True),
+        setting=string_setting("org_label", "org_label", "", always=True),
         absence=_org_absence,
     ),
 ]

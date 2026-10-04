@@ -5,16 +5,16 @@
 
 An interactive patcher for the **Claude Code native binary**. Pick the tweaks
 you want — inline and live thinking, detailed tool calls, subagent model
-overrides, your own startup name, your **ChatGPT/Codex-plan GPT models as
-native models** — and apply them to your installed `claude` in one keystroke.
+overrides, your own startup name, **custom models through your own
+Anthropic-compatible endpoint** — and apply them to your installed `claude`.
 Fully reversible: a pristine backup is kept, `patch-cc restore` puts it back.
 No Node, no Bun.
 
 ```bash
-uvx patch-cc                   # fullscreen menu, no install needed
+uvx --no-cache patch-cc        # fullscreen menu, no install needed
 ```
 
-![patch-cc: pick tweaks, register a Codex model, pin the Plan agent to it, bake](https://raw.githubusercontent.com/anfreire/patch-cc/main/docs/demo.gif)
+![patch-cc interactive patcher](https://raw.githubusercontent.com/anfreire/patch-cc/main/docs/demo.gif)
 
 ## Requirements
 
@@ -28,17 +28,16 @@ uvx patch-cc                   # fullscreen menu, no install needed
   binary has to be re-signed or macOS refuses to run it.
 
 The menu is a single centered panel: move with `↑ ↓`, toggle with `space`,
-press `s` to save. Patches that carry a setting — subagent models, Codex models,
+press `s` to apply. Patches that carry a setting — subagent models, custom models,
 the startup name, the `--version` marker, the org/email label — open a centered
 modal on `enter`, and the row then shows what you chose. Everything choosable
 is a picker: the agent names and model aliases are **discovered from your
-binary itself** (and the Codex ones from your plan), so the menu can never
+binary itself** (and custom models from your endpoint, with manual entry available), so the menu can never
 offer something your build would reject. Typing exists only for the genuinely
 free-text values.
 
-A patched binary records what was applied inside itself, so the menu always
-comes up showing the real current state, and `patch-cc status` answers
-exactly.
+The menu remembers your selection, including the settings of patches you
+switch off, and its header says when the binary differs from it.
 
 Prefer it always available on your PATH? Install it:
 
@@ -58,128 +57,99 @@ patch-cc                       # then just run it
 | | Stream thinking live | See reasoning as it is generated, inline and in order |
 | | Show subagent prompts | Prompt blocks visible during normal use |
 | Models & effort | Persist max effort | `/effort max` saves as your default for new sessions, like the other levels |
-| | Codex models | Use OpenAI/Codex-plan models in Claude Code — see [Codex models](#codex-models) |
+| | Custom models | Register external models and route them to an Anthropic-compatible endpoint — see [Custom models](#custom-models) |
 | | Override subagent models | Pick the model per built-in agent (discovered from your binary) |
 | Chrome & branding | Disable spinner tips | No rotating tips on the spinner |
 | | Mark `--version` | Appends `(patched)` — or any marker you choose |
 | | Custom startup name | Defaults to `<your username>'s Code` |
-| | Startup org/email label | Replace the org/email on the welcome screen — or hide it (demo mode keeps the stock line). Upstream stopped drawing the segment in 2.1.246, so newer builds offer this dimmed as *not on this build* |
+| | Startup org/email label | Replace the org/email on the welcome screen — or hide it (demo mode keeps the stock line). Upstream stopped drawing the segment in 2.1.246, so newer builds do not offer it |
 
 ## Usage
 
-Everything the menu does is also a non-interactive subcommand (shown with
-`uvx`; drop it if you installed the tool):
+The menu is the one place choices are made; two commands act on them (shown
+with `uvx --no-cache`; drop it if you installed the tool):
 
 ```bash
-uvx patch-cc apply                            # the default patch set
-uvx patch-cc apply tool-calls live-thinking   # just these
-uvx patch-cc apply --brand                    # + branding as <username>'s Code
-uvx patch-cc apply --brand "Ada's Code"       # + branding, explicit name
-uvx patch-cc apply --model Explore=haiku --model general-purpose=opus
-uvx patch-cc apply --suffix "(mine)"          # custom --version marker
-uvx patch-cc apply --org-label                # hide the welcome screen's org/email
-uvx patch-cc apply --org-label "Ada's Lab"    # ...or show this instead
-uvx patch-cc apply --codex gpt-5.6-sol        # + a Codex model (see below)
-uvx patch-cc apply --from-cache               # replay your last remembered selection
-uvx patch-cc status                           # exactly what is applied
-uvx patch-cc doctor                           # do all patches match this build, and does it bake + boot?
-uvx patch-cc doctor path/to/claude            # ...same, for some other binary
-uvx patch-cc list                             # every patch, described
-uvx patch-cc restore                          # put the original back
+uvx --no-cache patch-cc apply     # bake the saved selection — after a Claude update, this is all you need
+uvx --no-cache patch-cc restore   # put the original back
 ```
 
-A flag that configures a patch also selects it — `apply --help` lists them
-all. Agents and models are validated against what your installed binary
-actually ships, and Codex model ids against what your plan offers.
+`apply` takes no flags: it bakes exactly what the menu would open on — your
+saved selection, else what the installed binary already records, else the
+default set — and says what this build cannot honour before it writes.
+Agents and models are checked against what your installed binary actually
+ships, and custom model ids against Claude's own names. The saved selection
+is a readable file (`~/.cache/patch-cc/selection.json`, under
+`$XDG_CACHE_HOME` when set) if you ever want to script it.
 
-## Codex models
+## Custom models
 
-Bring your **ChatGPT/Codex-plan** models (GPT-5.x) into Claude Code and use them
-alongside your Claude ones — in the `/model` picker, as a subagent override,
-with `/effort` driving how hard they think. It is two halves: a patch that
-teaches your binary to accept and route the models you pick, and a small
-localhost **gateway** that translates between Claude Code and OpenAI. Only the
-models you pick are diverted — no Anthropic-model request ever goes anywhere
-but Anthropic, so your Claude plan is untouched. Nothing extra to install: the gateway is pure
-Python and ships with patch-cc; you just sign in to a ChatGPT or Codex plan.
+Register models served by your own **Anthropic Messages endpoint** beside
+Claude's: in `/model`, in the status line, and as subagent targets. The endpoint
+can be a proxy (CLIProxyAPI, OmniRoute, 9router, LiteLLM, …), a provider's
+Anthropic-compatible API, or a local server such as Ollama; patch-cc runs no
+server and vouches for none of them. If you have no preference,
+[EasyCLIProxyAPI](https://github.com/router-for-me/EasyCLIProxyAPI) is the one patch-cc
+is tested against. Only the chosen models' requests are diverted. Claude models
+keep their endpoint, your login and every feature.
 
-```bash
-uvx patch-cc codex login                 # sign in to your ChatGPT/Codex plan
-uvx patch-cc                             # Codex models → pick models → save with `s`
-uvx patch-cc codex serve                 # start the gateway; keep it running
-```
+In the menu, open **Custom models** (`?` there opens this section) and set
+the **Endpoint**: the base URL before `/v1/messages`, such as
+`http://127.0.0.1:8317` or `https://api.z.ai/api/anthropic`. Add a **Key** if
+the endpoint needs one, then open **Models**: `tab` lists what the endpoint
+offers, `space` picks, `a` adds an id by hand, and `enter` edits a model's
+name, `/model` alias, context window and effort levels. Names, windows and
+levels come from the endpoint where it reports them; a model with a default
+and a larger window offers both, and the window and effort pickers take your
+own value under `c` (`256k`, `272000`, `1m`; a comma-separated ladder). Without
+a window, Claude's 200K default stands, and nothing checks a number you type.
+Discovery only suggests: `apply` never contacts the endpoint and bakes exactly
+what was chosen, so it replays unchanged after a Claude update.
 
-Which models you want is a patch setting like the startup name, so the menu's
-**Codex models** row is where you pick them — it lists what your plan offers,
-live. Everything the menu does the command line does too:
+**The key.** The patched binary sends `PATCH_CC_API_KEY` when it is set, and
+otherwise the key the menu saves to `~/.local/share/patch-cc/api-key` (mode 600,
+under `$XDG_DATA_HOME` when set; the path is resolved when you apply and baked
+as-is). It goes out as both `Authorization: Bearer` and `x-api-key`, read per
+request, so a new key needs no re-apply. Your Claude login is removed from those
+requests. No key means no credential header, which is what keyless local
+servers expect. The key never enters the binary or the saved selection.
 
-```bash
-uvx patch-cc apply --codex gpt-5.6-sol --codex gpt-5.5
-uvx patch-cc apply --help                # lists the model ids your plan offers
-uvx patch-cc apply --from-cache           # replay your last selection
-```
+**What the endpoint must speak** is Anthropic's
+[gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol). Routed
+turns always carry the full history and never mid-conversation system messages
+or context edits; token counting may 404. Three things endpoints get wrong:
 
-Then pick a model like any other:
+- The final `message_delta.usage` must be the whole object, with cache tokens
+  subtracted and `input_tokens` at least 1.
+- `stop_reason: "refusal"` makes Claude Code re-run the turn on a Claude
+  fallback model at Anthropic, carrying the routed conversation.
+- CLIProxyAPI and LiteLLM listen on all interfaces by default. Bind them to
+  `127.0.0.1` (`server.host`, `--host`).
 
-```bash
-claude --model sol                       # shortcut → newest gpt-5.6-sol
-claude --model gpt-5.6-sol               # the full id also works, as does /model
-```
-
-- **Shortcuts** (`sol`, `terra`, `luna`, …) are the last word of the model id;
-  the newest in a family wins, the way `opus` means the latest Claude Opus. They
-  are derived from the ids you picked — there is nothing to configure.
-- **Your binary is the record.** The models and the port live in the patched
-  binary, so `patch-cc status` names exactly what is registered, and
-  `codex serve` finds the right port with nothing to tell it.
-- **They read as native everywhere.** A registered model is added to the
-  binary's own model table, so its real name shows in the status line and the
-  welcome banner, its plan-reported effort levels are declared, and
-  `/advisor sol` works like any other model. Ask for an effort the model
-  doesn't run and the gateway quietly runs the closest lower one — the same
-  clamping Claude Code documents for its own models.
-- **The gateway has to be running.** Every surface that names it says whether it
-  is — the apply report as soon as you bake, `patch-cc status`, and `codex
-  status` — so you never learn it from a request that hangs instead.
-- The gateway holds *your* OpenAI token and listens only on localhost. No
-  Anthropic-model request is ever diverted to it. The Codex ones that *are*
-  still carry Claude Code's own auth header — the gateway ignores it and never
-  forwards it, but treat the port as trusted: whatever binds it first sees it.
-- **The gateway keeps no conversation, and says so.** Claude Code's newest
-  first-party betas assume a server that remembers — Message Threads send only
-  what is new each turn, kept reminders are sent once — and it turns them on
-  for a Codex model too. The gateway refuses them the way the API refuses what
-  it can't do, and Claude Code resends the turn whole: three quick local
-  retries on a session's first Codex request. Threads are refused per model,
-  so your Claude models keep theirs. Kept reminders and mid-conversation
-  system messages are a per-session switch in Claude Code, so once a session
-  has used a Codex model its Claude requests go in the classic shape too — the
-  same content, without that caching shortcut.
-- After a Claude update, **re-bake** — the patch reverts with the binary — but
-  the gateway is separate and keeps running. Until you do, a Codex model you had
-  saved as your default reads as unavailable; the models live in the patch.
-  Change the port and the gateway needs a restart to follow it.
+HTTP is accepted on loopback only; remote endpoints need HTTPS. Effort is a
+request setting the endpoint translates; the menu offers the ladder cut at
+each top the binary can express, or **off**. A model that reports no levels
+starts off — nothing is offered that was not declared, since Claude Code
+would otherwise offer every level to a model it does not know. Levels a model
+excludes are switched off from Claude 2.1.267 on, through
+`CLAUDE_CODE_MODEL_CAPABILITIES`, and your own entries in that variable win.
+Managed `availableModels` allowlists still apply. Bedrock, Vertex and Foundry
+modes are out of scope.
 
 ## After a Claude update
 
 Claude auto-updates roughly daily and replaces the binary, which reverts the
-patch. Re-run `patch-cc` — the menu remembers your last selection — replay it
-without the menu via `patch-cc apply --from-cache`, or re-apply your set
-explicitly:
-
-```bash
-uvx patch-cc apply --brand --model Explore=haiku
-```
-
-`uvx patch-cc status` tells you whether the current binary is patched, and the
-startup name / `--version` marker are visible tells too.
+patch. Run `patch-cc apply` — it bakes your saved selection and says what the
+new build cannot honour — or open `patch-cc`, whose header reads **pending
+apply** until you do. The startup name and the `--version` marker are visible
+tells too.
 
 ## Why native-only, and what the write does
 
-Claude Code now ships only as a Bun single-file executable; the npm package is a
+Claude Code ships only as a Bun single-file executable; the npm package is a
 wrapper that downloads it. patch-cc edits the JavaScript modules embedded in the
-binary's `.bun` section — since 2.1.242 the app is code-split across ~1,300 of
-them, and patch-cc treats every one as a single surface. The write never moves a
+binary's `.bun` section — since 2.1.242 the app is code-split across more than a
+thousand of them, and patch-cc treats every one as a single surface. The write never moves a
 byte of the original: each edited module's source is appended and its stale
 precompiled bytecode is unlinked (editing a module's source invalidates its
 bytecode anyway), so a patched binary is a few percent larger than the original,
@@ -187,7 +157,7 @@ and everything else the binary carries — Bun's own records, however its format
 grows — is exactly where it was. That is what keeps the container layer out of
 the way when Bun changes its format under Claude.
 [docs/INTERNALS.md](docs/INTERNALS.md#the-rule-never-move-a-pristine-byte) has
-the reasoning; `patch-cc status` has your numbers.
+the reasoning; the apply report has your numbers.
 
 See [docs/INTERNALS.md](docs/INTERNALS.md) for the container format and
 [docs/PLAYBOOK.md](docs/PLAYBOOK.md) for repairing a patch after an update.
@@ -200,7 +170,7 @@ The patch set is a Python port of
 [a-connoisseur/patch-claude-code](https://github.com/a-connoisseur/patch-claude-code),
 with the subagent-model override idea from
 [aleks-apostle/claude-code-patches](https://github.com/aleks-apostle/claude-code-patches).
-Registering Codex models inside the bundle follows
+Registering external models inside the bundle follows
 [clodex](https://github.com/gxjansen/clodex); the routing here is done in the
 bundle rather than with clodex's TLS interception.
 

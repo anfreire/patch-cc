@@ -58,9 +58,9 @@ def _rebound(name: str, site: js.Node, owner: js.Node) -> bool:
     Minified locals are single letters and they repeat constantly, so a name on
     its own is not a variable -- it is a spelling, and the scope it was read in
     is the rest of it. A callback inside the component taking its own ``b``
-    read as the component's ``b``, and the conjunction that got rewritten was
-    the callback's own: both halves matched by spelling, the count went up by
-    one, and the patch stayed green.
+    would read as the component's ``b``, and the conjunction rewritten would be
+    the callback's own: both halves matched by spelling, the count up by one,
+    the patch green.
 
     So the scopes between the use and the component are asked whether any of
     them binds it, which is the question a resolver would answer and the only
@@ -89,10 +89,12 @@ def _subagent_prompt(source: Source, _options: Options, outcome: Outcome) -> Sou
     """Show the subagent ``Prompt`` block outside transcript mode.
 
     Every gate is the same conjunction -- *in transcript mode, and there is a
-    prompt* -- and dropping the first half is the whole patch. Three matchers
-    used to spell three appearances of it: the block's mount, a second mount in
-    the completed state, and an early return that renders an empty state unless
-    the prompt is showing. They differed only in what surrounded them.
+    prompt* -- and dropping the first half is the whole patch. Four gates spell
+    it on every build in the corpus: the block's mount, a second mount in the
+    completed state, an early return that renders an empty state unless the
+    prompt is showing, and the prompt render in the progress-messages
+    component. They differ only in what surrounds them, and one rule reaches
+    all four.
 
     Both halves are named by upstream: the transcript flag is a parameter
     property, and the prompt is whatever the component passes as ``prompt``.
@@ -124,8 +126,8 @@ def _subagent_prompt(source: Source, _options: Options, outcome: Outcome) -> Sou
             # One half is the flag, the other is the prompt, and the patch keeps
             # the prompt. Which of the two upstream writes first is the
             # minifier's business as much as anything else here: asking for the
-            # flag on the left cost a whole Prompt block the day one gate was
-            # spelled the other way round, at 3/4 and green.
+            # flag on the left would cost a whole Prompt block the day one gate
+            # is spelled the other way round, at 3/4 and green.
             showing = [side for side in pair if js.text(side) in prompts]
             if len(showing) != 1 or not any(
                 js.text(side) == transcript for side in pair
@@ -155,7 +157,7 @@ _MODEL = "model"
 
 #: The Task tool's own describe-string. The enum it introduces is the list of
 #: aliases a subagent may be pinned to, and one home for it matters: `enum`
-#: (in `codex-models`) splices imported ids into the very array
+#: (in `custom-models`) splices imported ids into the very array
 #: :func:`discover_models` reads back out, and patches/__init__.py explains why
 #: that ordering is load-bearing. Matched separately, the two would drift apart
 #: on the next upstream reshape and only one of them would be repaired.
@@ -220,9 +222,9 @@ def _resolved_name(source: Source, value: js.Node) -> str | None:
     bundle and the distinction did not exist.
 
     ``None`` is ordinary absence -- a computed or otherwise unreadable type, the
-    same answer the old literal-only gate gave every constant. Two declarators
-    for one identifier is not absence but ambiguity, and :func:`js.only` makes it
-    loud rather than picking one, the same cardinality rule every rewrite here
+    answer a literal-only read gives every constant. Two declarators for one
+    identifier is not absence but ambiguity, and :func:`js.only` makes it loud
+    rather than picking one, the same cardinality rule every rewrite here
     follows.
     """
     if value.type == "string":
@@ -253,9 +255,7 @@ def discover_agents(source: Source) -> list[BuiltinAgent]:
 
     A definition is an object carrying all three of the properties that make
     one, and nothing is said about their order or about how much text sits
-    between them -- which is what the 3,000-character scan window this replaced
-    was guarding against, and what its ``getSystemPrompt:`` stop-word was
-    trying to bound. An object has an end; a window has to guess one.
+    between them: an object has an end, where a scan window has to guess one.
 
     Definitions marked internal (their ``whenToUse`` says so) are not offered:
     they are orchestration plumbing, not agents a user chooses.
@@ -350,10 +350,10 @@ def discover_models(source: Source) -> list[str]:
     """Model aliases the binary's own Task tool accepts for subagents.
 
     Empty when the Task-tool schema anchor is gone, and deliberately not backed
-    by a guessed default. A hardcoded fallback (`haiku/sonnet/opus`) read a lost
-    enum as those three: `doctor` printed a plausible list, every pin to one of
-    them landed, and a pin to a name the real bundle accepts was refused -- the
-    same emptiness that `codex-models`' own required `enum` step reports
+    by a guessed default. A hardcoded fallback (`haiku/sonnet/opus`) would read
+    a lost enum as those three: `doctor` prints a plausible list, every pin to
+    one of them lands, and a pin to a name the real bundle accepts is refused --
+    the same emptiness that `custom-models`' own required `enum` step reports
     as broken in the same run. With nothing to offer, the offer is empty:
     `discover_models` returns `[]`, `doctor` shows `models: inherit` alone, and a
     requested pin fails its required step rather than landing on a name nothing
@@ -429,19 +429,20 @@ def bypassed_agents(source: Source, agents: list[BuiltinAgent]) -> list[Bypass]:
     Its *guard* is what identifies it and names the pinned agent, and it
     outlives its body: 2.1.217 grew a
     ``CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP`` escape hatch in the middle
-    while the guard stayed put, and the matcher that had spelled the body
-    silently cost every Explore override until it learned to skip intervening
-    statements. The body is a node now, so there is nothing left to skip.
+    while the guard stayed put, so a matcher that spells the body silently
+    loses every Explore override there, where the body taken as a node has
+    nothing to skip.
 
     The guard is read as the comparison it is. Spelled as the phrase
-    ``.source!=="built-in"`` it also asserted which side upstream writes the
-    string on, and ``"built-in"!==e.source`` -- one reordering, the same
-    test -- read as no helper being there at all.
+    ``.source!=="built-in"`` it would also assert which side upstream writes
+    the string on, and ``"built-in"!==e.source`` -- one reordering, the same
+    test -- would read as no helper being there at all.
 
     Which agent a local stands for is likewise a question with one right
     answer or none: two definitions held under one minified name are two
-    answers, and taking the first mapped the bypass to the wrong agent, left
-    the real override inert, and fired no note because a bypass *was* found.
+    answers, and taking the first would map the bypass to the wrong agent,
+    leave the real override inert, and fire no note because a bypass *was*
+    found.
     """
     holders: dict[str, list[BuiltinAgent]] = {}
     for agent in agents:
@@ -478,10 +479,10 @@ def _subagent_models(source: Source, options: Options, outcome: Outcome) -> Sour
         return source
 
     # The bundle in hand is the only authority on what a subagent may be pinned
-    # to -- including imported Codex aliases, which codex-models has already
+    # to -- including imported custom ids, which custom-models has already
     # written into this very enum by the time we run (see patches/__init__.py).
     # Asking the bundle rather than the options is what ties a pin to its
-    # registration: a codex-models the fixpoint dropped leaves no alias here,
+    # registration: a custom-models the fixpoint dropped leaves no alias here,
     # so the pin fails with it instead of landing on a model nothing registered.
     offered = {INHERIT, *discover_models(source)}
     agents = discover_agents(source)
@@ -489,10 +490,10 @@ def _subagent_models(source: Source, options: Options, outcome: Outcome) -> Sour
     edits: list[Edit] = []
 
     # Required: every override reaching a patch has already been validated
-    # against this bundle by its surface (CLI, --from-cache, or the menu), so
+    # against this bundle by its surface (`apply` or the menu), so
     # one that cannot be written is not a shape this build lacks -- it is the
-    # asked-for change failing. Left optional, the patch stayed green, the
-    # binary shipped without the override, and the manifest claimed it.
+    # asked-for change failing. Left optional, the patch would stay green, the
+    # binary ship without the override, and the manifest claim it.
     outcome.declare(required=tuple(sorted(options.subagent_models)))
     for name, target in sorted(options.subagent_models.items()):
         step = outcome.step(name)
@@ -551,18 +552,17 @@ def _pins_from(value: object) -> dict[str, str]:
     return {a: m for a, m in value.items() if isinstance(a, str) and isinstance(m, str)}
 
 
-#: The subagent-model overrides live under ``models`` in the manifest and
-#: ``subagent_models`` on the cache and ``Options`` -- the divergent spelling
-#: this declaration keeps in one place.
+def _set_pins(options: Options, value: object) -> None:
+    options.subagent_models = _pins_from(value)
+
+
 _SUBAGENT_SETTING = Setting(
-    manifest_key="models",
+    key="subagent_models",
     recorded=lambda o: bool(o.subagent_models),
     to_manifest=lambda o: o.subagent_models,
-    from_manifest=lambda o, v: setattr(o, "subagent_models", _pins_from(v)),
-    to_cache=lambda o: {"subagent_models": o.subagent_models},
-    from_cache=lambda o, c: setattr(
-        o, "subagent_models", _pins_from(c.get("subagent_models"))
-    ),
+    from_manifest=_set_pins,
+    to_cache=lambda o: o.subagent_models,
+    from_cache=_set_pins,
 )
 
 
@@ -570,7 +570,6 @@ PATCHES = [
     Patch(
         id="subagent-prompt",
         title="Show subagent prompts",
-        summary="Show a subagent's Prompt block during normal use, not only in transcript mode.",
         group=GROUP_OUTPUT,
         fn=_subagent_prompt,
         anchors=(_BACKGROUNDED, f"{_TRANSCRIPT_MODE}:", f"{_PROMPT}:"),
@@ -578,11 +577,9 @@ PATCHES = [
     Patch(
         id="subagent-models",
         title="Override subagent models",
-        summary="Choose the default model for the built-in agents found in your binary.",
         group=GROUP_MODELS,
         fn=_subagent_models,
         default=False,
-        option="--model",
         anchors=(f"{_AGENT_TYPE}:", MODEL_DESCRIPTION, _INHERIT_LITERAL),
         setting=_SUBAGENT_SETTING,
     ),

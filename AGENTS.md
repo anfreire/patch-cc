@@ -20,12 +20,11 @@ is the check.
 Be exact about what that covers: doctor runs the **matchers**, parses the
 bundle they produce, then **bakes it into a temp binary and executes
 `--version`** — so the sweep also proves every build writes and boots (the
-container layer included; 2.1.246 is why). It still never runs the gateway,
-the translator, the OAuth flow or the menu, so a change under
-`src/patch_cc/codex/` (the bridge — all of it runtime, none of it a patch; the
-Codex *patch* is `patches/codex.py`, which the sweep does cover) or in
-`menu.py` is checked by exercising it — a real `codex serve` against a real
-turn — and a green sweep says nothing about it. Nor does `--version` exercise
+container layer included; 2.1.246 is why). It still never exercises endpoint
+discovery, the saved key or the menu. Changes in `custom_models.py` or
+`menu.py` need their real flows exercised, and routing changes need a watched
+turn through an Anthropic-compatible endpoint; a green sweep says nothing about
+those runtime flows. Nor does `--version` exercise
 a patch's *feature* at runtime: it proves the patched code loads and runs, not
 that a streamed turn renders — behaviour changes still want a real turn
 watched.

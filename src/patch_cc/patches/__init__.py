@@ -4,18 +4,18 @@ Patches run in registration order and each sees the previous one's output.
 The order below is the upstream order; do not reorder casually -- some patches
 depend on regions an earlier one leaves untouched.
 
-``codex`` runs before ``agents`` on purpose, and it is the one ordering that is
-load-bearing rather than inherited. ``codex-models`` writes the chosen Codex ids
+``custom_models`` runs before ``agents`` on purpose, and it is the one ordering that is
+load-bearing rather than inherited. ``custom-models`` writes the chosen custom ids
 into the Task tool's model enum; ``subagent-models`` reads that same enum to
 decide what a subagent may be pinned to. Registering first means a pin to a
-Codex model is offered exactly when that model is really in the bundle -- so a
-``codex-models`` the fixpoint had to drop takes its pins down with it instead of
+custom model is offered exactly when that model is really in the bundle -- so a
+``custom-models`` the fixpoint had to drop takes its pins down with it instead of
 leaving a definition pointing at a model nothing registered.
 """
 
 from __future__ import annotations
 
-from . import agents, chrome, codex, output, streaming, thinking
+from . import agents, chrome, custom_models, output, streaming, thinking
 from .base import (
     DEFAULT_BRAND,
     DEFAULT_SUFFIX,
@@ -32,7 +32,7 @@ ALL_PATCHES: list[Patch] = [
     *output.PATCHES,
     *thinking.PATCHES,
     *streaming.PATCHES,
-    *codex.PATCHES,
+    *custom_models.PATCHES,
     *agents.PATCHES,
     *chrome.PATCHES,
 ]

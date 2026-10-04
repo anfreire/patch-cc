@@ -15,7 +15,7 @@ in the binary:
 Inside that section is a *Bun module graph*: a flat arena of payloads, a module
 table describing them, and a trailer. Before 2.1.242 the graph was the app in one
 module plus a few asset modules; since then the app is **code-split** across
-~1,300 `chunk-*.js` modules that the entry lazily imports (see
+more than a thousand `chunk-*.js` modules that the entry lazily imports (see
 [the split](#the-21242-split-and-the-patchable-surface)). Either way patch-cc
 treats every module the container declares to be JavaScript as one surface.
 
@@ -46,13 +46,13 @@ The loader's contract above is the only thing the rewrite rides. How the
 builder lays the arena out, and which records follow the table, is the half of
 the format that changes with Bun — and a rewrite that re-laid the arena would
 have to find and re-aim every pointer in the blob, including pointers in records
-it had never seen. Bun owes that to nobody, and it is where this tool broke
-twice: 2.1.246 (Bun 1.4.1) chained records after the table, and a chain-blind
-compaction shipped a binary that segfaulted in Bun's graph loader while every
-module compared equal; 2.1.269 (Bun 1.4.3) chained two more, and the chain
-walker written after 2.1.246 — mirroring Bun's reader record for record, with a
-whitelist of the bits it knew — refused the build outright. Mirroring the
-reader more completely is a repair that can never be finished.
+it had never seen. Bun owes that to nobody: 2.1.246 (Bun 1.4.1) chained records
+after the table, and a compaction blind to the chain ships a binary that
+segfaults in Bun's graph loader while every module compares equal; 2.1.269
+(Bun 1.4.3) chained two more, and a chain walker that mirrors Bun's reader
+record for record, with a whitelist of the bits it knows, refuses that build
+outright. Mirroring the reader more completely is a repair that can never be
+finished.
 
 So `rewrite` moves nothing. An edited module's text is appended after the
 arena (NUL-terminated, as Bun's own `count_z` payloads are); the module table
@@ -121,9 +121,9 @@ with lazy loading, and the shape changed under the tool:
 | 2.1.243 | 1,385 | 19,952 bytes (an argv shim) |
 
 The entrypoint is now a ~20 KB shim that parses argv and lazily
-`import()`s the app across ~1,300 `/$bunfs/root/chunk-*.js` modules; ~46 MB of
-JS, the largest chunk 7.3 MB. The code did not disappear — every anchor is still
-in the binary — but it left the one module patch-cc used to read, and it does not
+`import()`s the app across the `/$bunfs/root/chunk-*.js` modules; ~36 MB of
+JS on 2.1.243, the largest chunk 7.3 MB. The code did not disappear — every
+anchor is still in the binary — but it left the entrypoint, and it does not
 concentrate in a single chunk (`branding` spans a dozen modules, `org-label` ten,
 `spinner-tips` six).
 
@@ -139,7 +139,7 @@ monolith — so [`js.Source`](PLAYBOOK.md#the-many-module-surface) spans one mod
 or a thousand through the same code.
 
 The entrypoint still matters for one thing: it is where the manifest lives and
-what `status` reads, named by the offsets struct's `entry_point_id` — the same
+what the menu and `apply` read, named by the offsets struct's `entry_point_id` — the same
 index Bun resolves it by. Its *name* is upstream's to change and we never read
 it: 2.1.229 renamed it `/$bunfs/root/src/entrypoints/cli.js` → `/$bunfs/root/cli`.
 
@@ -167,10 +167,10 @@ Measured on 2.1.268, the default patch set:
 | pristine | 219 MB | 78 MB, every module |
 | patched (11 modules edited) | 228 MB | 51 MB, the untouched modules |
 
-Read the current figures off any binary with `patch-cc status` rather than off
-this table. Startup does not move: an edited module recompiles from source
-whether its bytecode is dropped or merely unlinked, and the recompile is per
-lazily-imported edited module rather than the whole app at once.
+The apply report prints both binary sizes for your build. Startup does not
+move: an edited module recompiles from source whether its bytecode is dropped
+or merely unlinked, and the recompile is per lazily-imported edited module
+rather than the whole app at once.
 
 Every write asserts each **edited** module names no bytecode in the binary it
 produced (`container.verify`), and `doctor`'s smoke bake writes a temp binary
@@ -209,34 +209,37 @@ platforms behave the same way. Every edit is followed by an ad-hoc `codesign`
 
 Every patched bundle carries a single comment line — appended to the **entry
 module**, the one module always present and always re-extracted, and the one
-`status` reads — describing its shape; [PLAYBOOK.md](PLAYBOOK.md) covers what it
+the manifest is read from — describing its shape; [PLAYBOOK.md](PLAYBOOK.md) covers what it
 means for matcher health:
 
 ```
-//patch-cc {"v":1,"tool":"<version>","patches":[...],"brand":...,"suffix":...,
-            "models":{...},"org":...,"codex":{"port":8817,"models":["gpt-5.6-sol"]}}
+//patch-cc {"v":1,"tool":"<version>","patches":[...],
+            "custom_models":{"endpoint":"http://127.0.0.1:8317",
+             "models":[{"id":"qwen3-coder","name":"","context":256000,"efforts":[]}]},
+            "subagent_models":{...},"suffix":...,"brand":...,"org_label":...}
 ```
 
 Every key after `patches` is a configurable patch's own, declared in one place
-(`Patch.setting`) so the manifest here, the cache, and the menu cannot spell it
-three ways. Each is written only when *that* patch landed **and** has a value
-worth recording, so `status` can never assert a name, marker, or model the
+(`Patch.setting`) under the same name the saved selection uses, so the manifest
+here, the cache, and the menu cannot spell it three ways. Each is written only
+when *that* patch landed **and** has a value
+worth recording, so the menu can never assert a name, marker, or model the
 bundle does not contain — and so this is the *widest* the line gets, not its
 fixed shape.
 
-That line is why `patch-cc status` can name exactly what is applied: several
-patches are value flips (`verbose:!0`) that leave no other trace. A comment
-can't collide with code and travels with the bundle through extract/repack.
-The menu also reads it to pre-select the current patch set — the binary is the
-state.
+That line is why the menu can name exactly what is applied: several patches
+are value flips (`verbose:!0`) that leave no other trace. A comment can't
+collide with code and travels with the bundle through extract/repack. The
+menu compares the manifest with the saved selection for its "pending apply",
+and both the menu and `apply` seed from it while nothing has been saved. The
+manifest remains the record of what is applied.
 
-Each key records what was *asked for*, never what was derived from it. `codex`
-carries model ids and a port and nothing else: a Codex model's display name and
-context window are already baked into the bundle, and repeating them here would
-be a second copy — one that a relabelling upstream could make disagree with the
-binary it claims to describe. That is also what makes the manifest the single
-home for the gateway port: `codex serve` and `codex status` read it from here
-rather than from a store of their own.
+Custom models are recorded in the same shape in the manifest and the
+selection cache: the endpoint, and each model's id, name, window, efforts and
+alias. The cache also keeps the window choices the endpoint reported, for the
+picker; only the chosen window is baked, so a later catalogue change cannot
+alter a replay. The key is in neither store; the
+running binary reads it per request (see the README).
 
 ## Safety
 
@@ -249,7 +252,7 @@ rather than from a store of their own.
   entirely (unlinking bytecode for nothing would only slow startup). A patch
   that *lands* still writes even where it changed no bytes, because landing
   includes an override the build already satisfies: the manifest records what
-  was asked and verified present, so `status` can report it.
+  was asked and verified present, so the menu can report it.
 - The bundle is parsed, and any syntax error aborts before the binary or the
   backup is touched — the two checks below answer "did we write what we meant
   to", which a corrupt splice satisfies perfectly. The parse is the same one
@@ -264,9 +267,9 @@ rather than from a store of their own.
   along, except each edited module's two pairs and hash word; the flags less
   the contiguity bit; the same entry module and the same `compileExecArgv`.
   Nothing is enumerated, so a record this code has never parsed is covered by
-  the same comparison as the ones it has. The check exists because 2.1.246
-  failed *only* there: every module compared equal while the written binary
-  was dead.
+  the same comparison as the ones it has. The check exists because from
+  2.1.246 a write can fail *only* there: every module compares equal while the
+  written binary is dead.
 - Patching a binary that is already marked, when no pristine backup exists, is
   refused outright — there is nothing clean to start from, and our edits change
   lengths, so a second pass would corrupt rather than update. `restore` or a

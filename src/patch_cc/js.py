@@ -142,8 +142,8 @@ def _advance(point: tuple[int, int], text: bytes) -> tuple[int, int]:
     while it carries none. Nearly every splice here is one line's worth of text
     into a bundle that is itself one enormous line -- but the manifest ends the
     file with real newlines, and a position that is right by luck is not a
-    position. Passing the *start* point as the end, as this once did, is
-    inert only for as long as that stays true.
+    position. Passing the *start* point as the end would be inert only for as
+    long as that stays true.
     """
     row, column = point
     lines = text.split(b"\n")
@@ -195,8 +195,8 @@ _LINKAGE = (
 class _Module:
     """One module's bytes and its parse, kept together and kept in step.
 
-    A build ships one such module before 2.1.242 (the whole app) and ~1,300
-    after it (the app dealt across ``chunk-*.js`` files); :class:`Source` spans
+    A build ships one such module before 2.1.242 (the whole app) and well over a
+    thousand after it (the app dealt across ``chunk-*.js`` files); :class:`Source` spans
     them, and this is one. Immutable, and enforced rather than assumed:
     :meth:`apply` returns a new `_Module` and never touches this one's bytes or
     its tree, so a patch that raises half-way discards its own partial rewrites
@@ -209,8 +209,8 @@ class _Module:
 
     The parse is lazy, and that is what keeps it from being a tax: a name is
     found, an anchor counted and the manifest read by byte scan, and a module a
-    scan never hits is never parsed. `status`, `list` and the menu's first
-    screen ask only scans and never pay for grammar; an edit buys it, for the
+    scan never hits is never parsed. The menu's first screen and `apply`'s
+    seed ask only scans and never pay for grammar; an edit buys it, for the
     handful of modules an anchor actually lands in.
     """
 
@@ -296,10 +296,10 @@ class _Module:
         immutability above true rather than merely intended. ``Tree.edit``
         mutates in place, so editing our own would leave the input holding a tree
         that no longer describes its bytes -- and the point is that the input
-        survives a rewrite that fails. It read as someone else's failure once:
+        survives a rewrite that fails. It would read as someone else's failure:
         the fixpoint re-runs every patch from the same source, so one drifted
-        matcher poisoned the second pass and twelve healthy patches reported
-        *their* anchors missing.
+        matcher would poison the second pass and every healthy patch report
+        *its* anchors missing.
         """
         batch = sorted(edits, key=lambda e: (e.start, e.end), reverse=True)
         data, tree = self.data, self.tree.copy()
@@ -385,7 +385,7 @@ def _root_of(node: Node) -> Node:
 class Source:
     """The bundle as a language: every JavaScript module, spanned as one.
 
-    Since 2.1.242 the app is dealt across ~1,300 modules; before it, one. This
+    Since 2.1.242 the app is dealt across well over a thousand modules; before it, one. This
     is that surface whichever it is -- ``find`` sweeps every module, ``count``
     sums across them, ``apply`` routes each edit to the module its node came
     from. A patch says ``source.find(name)`` and ``source.apply(edits)`` exactly
@@ -412,8 +412,7 @@ class Source:
     def over(cls, modules: list[tuple[int, bytes]], entry_index: int) -> Source:
         """Span the given ``(blob index, bytes)`` modules, naming the entry.
 
-        The entry module is where the manifest lives and what ``status`` reads,
-        so its position is kept; every module is one the container declared to
+        The entry module is where the manifest lives, so its position is kept; every module is one the container declared to
         be JavaScript (:meth:`patch_cc.bun.blob.Blob.js_modules`).
         """
         self = cls.__new__(cls)
@@ -429,8 +428,8 @@ class Source:
 
         The manifest is appended to the entry module and read back from it
         (``read_manifest``/``is_patched``), a byte scan that never parses. For a
-        pre-split build the entry *is* the whole app, so this is exactly the
-        bytes the single-module `Source` used to be.
+        pre-split build the entry *is* the whole app, so this is the whole
+        bundle.
         """
         return self._mods[self._entry].data
 
@@ -498,9 +497,8 @@ class Source:
         that binds it -- searches the module the read lives in, never the whole
         bundle, where :func:`only` would see a dozen unrelated declarations of
         the same spelling and rightly refuse to choose. Pre-split, the one module
-        is the whole bundle, so this is exactly :meth:`find`; that the two were
-        the same thing is what let the old bundle-wide resolve pass until the app
-        was dealt across modules.
+        is the whole bundle, so this is exactly :meth:`find`; the two come apart
+        only once the app is dealt across modules (2.1.242).
         """
         needle = _bytes(name)
         target = _root_of(anchor).id
@@ -527,7 +525,7 @@ class Source:
     def apply(self, edits: Iterable[Edit]) -> Source:
         """Route each edit to its module, splice, and reparse -- or raise on rubble.
 
-        A patch's batch may span modules (`codex-models` alone touches the enum,
+        A patch's batch may span modules (`custom-models` alone touches the enum,
         the validator, the resolvers, the redirect and the registry, in as many
         different chunks), and each edit knows its module through the node it was
         built from: the node's program root names the module, and every edit in
@@ -565,7 +563,7 @@ class Source:
 
         The same gated edit as any rewrite, so the bytes that get written are
         ones no splice -- the manifest's own included -- left unparseable, and
-        the manifest travels with the module ``status`` reads.
+        the manifest travels with the entry module.
         """
         entry = self._mods[self._entry]
         return self.apply([Edit.at(len(entry.data), _bytes(text), within=entry.root)])
@@ -763,14 +761,14 @@ def visible(declarator: Node, site: Node) -> bool:
 
     The question every spliced identifier owes an answer to, and the one kind
     of damage no gate here catches: an out-of-scope name parses, verifies, and
-    throws when its line runs. Live thinking's retired render half resolved
-    scope from the render outwards for exactly that reason -- but outwards is
-    only half of lexical, and the half a subtree walk gets wrong. A declaration
-    inside a nested function is invisible outside it; so is one inside a plain
-    block, which is the half stopping at function edges still gets wrong. Give
-    the 2.1.232 component that declared no live-thinking state a block-local
-    ``useState`` and the search reported 2/2, spliced a name from inside the
-    block into a render outside it, and took the note that was the only signal
+    throws when its line runs. Resolving scope from the site outwards is only
+    half of lexical, and the half a subtree walk gets wrong: a declaration
+    inside a nested function is invisible outside it, and so is one inside a
+    plain block, which is the half stopping at function edges still gets wrong.
+    A block-local ``useState`` in a component that declares no state of its own
+    at the top level (the 2.1.232 conversation renders are two such components)
+    would have an unscoped search report 2/2, splice a name from inside the
+    block into a render outside it, and take the note that was the only signal
     with it.
 
     Position is asked for exactly one shape and no other: a *direct* read of a
@@ -780,8 +778,8 @@ def visible(declarator: Node, site: Node) -> bool:
     the same one no other gate catches. Everything else keeps position out of
     it, because everything else is safe regardless of order: a closure written
     above a `let` reads it once invoked (bundle order is the bundler's, and
-    selecting a render by "falls after the declaration" looked like a scope
-    proof and was not one); a `var` is hoisted and has no dead zone; and a
+    selecting a site by "falls after the declaration" looks like a scope proof
+    and is not one); a `var` is hoisted and has no dead zone; and a
     *scope query* -- "is this binding visible anywhere in this block?", the
     shape ``_options_bag`` and the reducer ask by passing the block itself as
     ``site`` -- is answered by containment, since every real read inside sits
@@ -873,8 +871,8 @@ def only(found: list[_T], what: str) -> _T | None:
     That is the promise the playbook makes ("fail closed and loudly when the
     invariants -- or their cardinalities -- change") held to at the one place it
     can be checked. Taking the first match instead is how a decoy wins: a
-    prepended array carrying the four built-in model names absorbed the whole
-    Codex registration, real list untouched, eight of eight steps green.
+    prepended array carrying the four built-in model names would absorb the
+    whole custom-model registration, real list untouched, every step green.
     """
     if len(found) > 1:
         raise ValueError(
@@ -918,8 +916,8 @@ def returns(name: str) -> Callable[[Node], bool]:
 # ------------------------------------------------------------ JS structures
 #
 # The handful of shapes every patch here actually edits. Each one dissolves a
-# rule the playbook used to have to state, because the grammar answers what the
-# regex had to assert.
+# rule the playbook would otherwise have to state, because the grammar answers
+# what a regex would have to assert.
 
 #: Object literals and destructuring patterns. The same question -- "which
 #: properties does this carry?" -- is asked of both, and upstream turns one into
@@ -953,12 +951,12 @@ _KEYS = {
 def props(node: Node | None) -> dict[str, Node]:
     """An object literal or destructuring pattern as ``{name: value node}``.
 
-    This is the primitive that retires "a set is not a sequence". Property
-    order, adjacency, and which properties sit *between* the ones a matcher
-    cares about are all facts about a particular build; membership is the fact
-    about the site. Live thinking once carried two regexes for one props bag
-    purely because two call sites listed the same properties in different
-    orders, and a single inserted property killed both at once.
+    This is the primitive behind "a set is not a sequence". Property order,
+    adjacency, and which properties sit *between* the ones a matcher cares
+    about are all facts about a particular build; membership is the fact about
+    the site. Two call sites listing the same properties in different orders
+    would otherwise want a matcher each, and a single inserted property would
+    kill both at once.
 
     A property with no ``value`` field -- shorthand (``{a}``), a method
     (``{a(){}}``) -- maps to itself, because it *is* what it names. So a caller
@@ -1097,15 +1095,15 @@ def values(node: Node | None) -> Iterator[Node]:
     their last expression, an assignment with the value it assigns, and
     ``&&``/``||``/``??`` with either side; everything else -- a call, a read, a
     literal -- is a value of its own. Identity by membership among these is the
-    rule the codex resolvers state for their rejection (2.1.234 wrapped one in
-    a dead recognizer, and the exact spelling read a behaviourally identical
-    build as the resolver being gone), asked here of any value a matcher has an
-    opinion about: 2.1.246 minted ids for streamed blocks and the extras
-    element became ``ce?{...S.contentBlock,id:V}:S.contentBlock`` -- a value
-    that can still *be* the block read, read by the exact-node question as no
-    block at all, with every anchor count standing.
+    rule the custom-model resolvers state for their rejection (2.1.234 wraps
+    one in a dead recognizer, and the exact spelling reads a behaviourally
+    identical build as the resolver being gone), asked here of any value a
+    matcher has an opinion about: 2.1.246 mints ids for streamed blocks, so the
+    element that was the block read becomes ``ce?{...S.contentBlock,id:V}:S.contentBlock``
+    -- a value that can still *be* the block read, which an exact-node question
+    reads as no block at all, with every anchor count standing.
 
-    Kin to, and deliberately not one home with, ``patches.codex``'s null
+    Kin to, and deliberately not one home with, ``patches.custom_models``'s null
     question: null routes *asymmetrically* through ``||``/``??`` -- a null on
     their left is exactly what both exist to pass over -- so what can arrive
     and what can arrive null are two tables, not one fact spelled twice.

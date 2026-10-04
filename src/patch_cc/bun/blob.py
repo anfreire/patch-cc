@@ -118,16 +118,6 @@ class Blob:
         loader = self.entry_module().loader
         return [m for m in self.modules if m.loader == loader]
 
-    def bytecode_size(self) -> int:
-        """Total bytecode the module table names -- what Bun would run.
-
-        Before 2.1.242 only the entrypoint carried any; the code-split builds
-        carry it on every chunk. An edited module names none, so on a patched
-        binary this is the untouched modules' total, whatever dead bytes the
-        file still holds.
-        """
-        return sum(m.bytecode[1] for m in self.modules)
-
 
 def parse(data: bytes) -> Blob:
     """Parse a raw Bun blob (already unwrapped from its container section)."""

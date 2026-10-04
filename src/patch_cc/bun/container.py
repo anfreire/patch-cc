@@ -52,12 +52,8 @@ class Bundle:
 
     There is no decoding here. The layers below work in ``bytes``
     (``blob.js_modules``, ``blob.rewrite``), tree-sitter indexes ``bytes``, and a
-    ``str`` in the middle bought nothing but a second unit of offset for a splice
-    to be wrong in.
-
-    ``bytecode_size`` is the bytecode the module table names -- one module
-    carried it before 2.1.242, every chunk after -- which is what ``status``
-    reports.
+    ``str`` in the middle would buy nothing but a second unit of offset for a
+    splice to be wrong in.
     """
 
     path: str
@@ -65,7 +61,6 @@ class Bundle:
     source: js.Source
     blob: blobmod.Blob
     binary_size: int
-    bytecode_size: int
 
 
 def read(path: str) -> Bundle:
@@ -85,7 +80,6 @@ def read(path: str) -> Bundle:
         source=js.Source.over(modules, parsed.entry_point_id),
         blob=parsed,
         binary_size=os.path.getsize(path),
-        bytecode_size=parsed.bytecode_size(),
     )
 
 

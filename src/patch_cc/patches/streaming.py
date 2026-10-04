@@ -75,7 +75,7 @@ def _step_display_mode(source: Source, outcome: Outcome) -> Source:
     on all of them, and none of that is claimed: every member read is defaulted,
     as `spinner-tips` reads its setting, and a write is left alone for the
     reason it gives. An explicit ``false`` in the user's settings still wins,
-    which the request-side default this replaced could not honour.
+    which a default written at the request could not honour.
     """
     step = outcome.step("display-mode")
     edits = []
@@ -255,9 +255,9 @@ def _dispatches(node: js.Node, label: str) -> bool:
     that reaches it is upstream's to spell -- ``e.type``, ``e.event.type``, and
     ``e.event?.type`` the day someone adds a defensive ``?`` -- so the literal
     is what is matched and the path between is never described. Spelling the
-    whole test out once cost a reset exactly that one character: the live block
-    was never marked finished and shimmered on after every turn, with the step
-    reporting *absent* and the patch green.
+    whole test out is a claim on exactly that one character: the live block
+    would never be marked finished and shimmer on after every turn, with the
+    step reporting *absent* and the patch green.
 
     The operator is read, because the wrap runs the update on the side that
     dispatched: against a ``!==`` it would run on every event but this one.
@@ -346,10 +346,10 @@ def _dispatch(
     A build routes a given event *either* as a ``case`` arm in a ``switch`` *or*
     as an ``===`` test written into an ``if``; upstream uses both across the
     reducer at once, and which one carries a given event is not a fact about that
-    event. Binding each event to one of two functions made a spelling flip cost
-    swapping them -- on 2.1.233 the ``message_stop`` ``if`` sat one line above
-    the ``switch`` it would fold into, and folding it would have sent a step to
-    0/0. Matching both spellings (:func:`_routes`) makes that flip cost nothing,
+    event. Binding each event to one of the two spellings would make a flip
+    cost a repair -- on 2.1.233 the ``message_stop`` ``if`` sits one line above
+    the ``switch`` it could fold into, and folding it would send a step to 0/0.
+    Matching both spellings (:func:`_routes`) makes that flip cost nothing,
     which is the promise CONDUCT makes about a new spelling.
 
     The two spellings take the two edits they always did. A ``case`` arm gets the
@@ -390,8 +390,8 @@ def _step_reducer(source: Source, outcome: Outcome) -> Source:
     dispatch point is its own required step, so a build that folds an arm away
     reads as that point's absence by name; and every step here answers for its
     own identity alone -- nothing is discovered in one step for another to
-    depend on, which is how one moved memo once read as eight required steps
-    found nothing.
+    depend on, which is how one moved shape would otherwise read as every step
+    finding nothing.
     """
     step = outcome.step("reducer")
     found = _reducer(source)
@@ -453,8 +453,6 @@ PATCHES = [
     Patch(
         id="live-thinking",
         title="Stream thinking live",
-        summary="Show thinking as it is generated, inline and in order, instead of "
-        "only after the turn finishes.",
         group=GROUP_OUTPUT,
         fn=_live_thinking,
         anchors=(

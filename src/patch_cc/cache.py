@@ -1,22 +1,23 @@
-"""Remembered interactive selection.
+"""The saved selection: the one input ``apply`` bakes, and what the menu edits.
 
-The last selection made, so the next interactive run comes up pre-filled even
-after a Claude auto-update wiped the patched binary (and its manifest) away.
-Written by the interactive menu and by any ``apply`` given an explicit selection
--- a bare ``apply`` (the default set) leaves it untouched, so it never clobbers a
-remembered custom pick. ``apply --from-cache`` is the non-interactive reader,
-replaying that selection when explicitly asked. Deleting the file resets the
-menu to defaults and leaves ``--from-cache`` with nothing to replay.
+The file keeps every patch's setting, on or off; :meth:`Selection.active`
+derives the patch input from it. The binary's manifest records what is
+*applied* and seeds the selection only while nothing has been saved. Both the
+menu and ``apply`` read it through :func:`seed` and write it back after a
+successful bake, so the file always describes the last bake and the two can
+never disagree about what the next one would do.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+import tempfile
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from .patches import ALL_PATCHES, Options, default_ids, ids
+from .custom_models import model_names
+from .patches import ALL_PATCHES, Options, default_ids, derived_brand, ids
 
 
 def cache_path() -> Path:
@@ -28,35 +29,102 @@ def cache_path() -> Path:
 @dataclass(slots=True)
 class Selection:
     patches: list[str] = field(default_factory=default_ids)
-    options: Options = field(default_factory=Options)
-    #: Patch ids the cache named that this build no longer has, dropped from
-    #: :attr:`patches` while loading. Transient (never saved), so a caller that
-    #: *acts* on a replay can say it applied fewer patches than were saved
-    #: instead of doing so silently. Empty for a pre-fill, which does not act.
+    options: Options = field(default_factory=lambda: Options(brand=derived_brand()))
+    #: Patch ids the cache named that this tool no longer has, dropped from
+    #: :attr:`patches` while loading. Transient (never saved), so whoever reads
+    #: the file can say what was left out -- a replay before it applies fewer
+    #: patches than were saved, the menu as it opens -- and the next save
+    #: writes the file without them.
     dropped_patches: list[str] = field(default_factory=list)
 
+    def payload(self) -> dict:
+        """All saved preferences, including disabled values."""
+        data: dict[str, object] = {"patches": self.patches}
+        for patch in ALL_PATCHES:
+            if patch.setting is not None:
+                data[patch.setting.key] = patch.setting.to_cache(self.options)
+        return data
 
-def load() -> Selection:
-    """The last selection, or a fresh default set when none is cached or the
-    file is unreadable -- the menu always gets a usable, pre-checkable set.
+    def active(self) -> Selection:
+        """The patch input, derived without changing the saved preferences."""
+        selected = list(self.patches)
+        options = replace(self.options)
+        unrouted: set[str] = set()
+        if "custom-models" not in selected:
+            options.custom_models = []
+            unrouted = set(model_names(self.options.custom_models))
+        options.subagent_models = {
+            agent: model
+            for agent, model in self.options.subagent_models.items()
+            if "subagent-models" in selected and model not in unrouted
+        }
+        empty = {
+            "custom-models": not options.custom_models,
+            "subagent-models": not options.subagent_models,
+            "branding": not options.rebrands,
+        }
+        return Selection(
+            [pid for pid in selected if not empty.get(pid)],
+            options,
+            list(self.dropped_patches),
+        )
 
-    Only shapes are validated here (strings in the right places); whether an
-    agent or model still exists is the menu's question, answered against the
-    binary it is about to patch.
+
+def from_manifest(manifest: dict | None) -> Selection:
+    if manifest is None:
+        return Selection()
+    options = Options()
+    for patch in ALL_PATCHES:
+        if patch.setting is not None and patch.setting.key in manifest:
+            patch.setting.from_manifest(options, manifest[patch.setting.key])
+    return Selection(
+        [pid for pid in manifest.get("patches", []) if pid in ids()], options
+    )
+
+
+def seed(manifest: dict | None) -> tuple[Selection, str | None]:
+    """Saved preferences first, else the installed state -- and why, when the
+    saved file was passed over.
+
+    An unreadable file is reported, not raised: the menu wants to open anyway
+    (on the binary's own state, with the sentence shown) and ``apply``, which
+    *acts* on the selection, wants to refuse. The substitution belongs to the
+    caller that wants it, so both read the same answer and decide for themselves.
     """
-    return load_strict() or Selection()
+    saved = load()
+    if saved is not None:
+        return saved, None
+    note = (
+        f"The saved selection at {cache_path()} could not be read."
+        if cache_path().exists()
+        else None
+    )
+    return from_manifest(manifest), note
 
 
-def load_strict() -> Selection | None:
-    """The cached selection, or ``None`` when there is not one to read.
-
-    The same parse, with the fallback withheld. A pre-fill is happy to treat an
-    unreadable cache as "no preference" and offer the defaults, but ``apply
-    --from-cache`` *acts* on the answer: handed the defaults it would apply a set
-    the user never chose while reporting that it replayed their selection. The
-    two callers want different things from the same failure, so the substitution
-    belongs to the caller that wants it, not to the parse.
+def pending(selection: Selection, manifest: dict | None) -> bool:
+    """Would applying change the binary? What it would bake, against what the
+    binary records -- the manifest as carried, not re-read through this tool's
+    vocabulary. A manifest may name a patch this tool has no id for, and that
+    patch is still *in* the binary; re-read through ``from_manifest`` it would
+    be dropped, and the header would say "matches" over a binary that applying
+    would change.
     """
+    from .patcher import manifest_payload
+
+    active = selection.active()
+    would = manifest_payload(sorted(active.patches), active.options)
+    carried = dict(manifest) if manifest is not None else {"patches": []}
+    carried["patches"] = sorted(
+        pid for pid in carried.get("patches", []) if isinstance(pid, str)
+    )
+    return {k: v for k, v in would.items() if k not in ("v", "tool")} != {
+        k: v for k, v in carried.items() if k not in ("v", "tool")
+    }
+
+
+def load() -> Selection | None:
+    """The saved selection, or ``None`` for an absent or invalid file."""
     try:
         data = json.loads(cache_path().read_text("utf8"))
     except (OSError, json.JSONDecodeError, ValueError):
@@ -65,38 +133,39 @@ def load_strict() -> Selection | None:
         return None  # a cache that is not a JSON object holds no selection
     known = set(ids())
     saved = data.get("patches", default_ids())
-    if not isinstance(saved, list):
-        saved = default_ids()
+    if not isinstance(saved, list) or any(not isinstance(p, str) for p in saved):
+        return None
     # Each configurable patch reads its own value back off the cache dict, under
     # the key it also writes (`Patch.setting`), with the shape validation the
     # setting owns -- so the cache and the manifest cannot spell the same fact
-    # two ways, which is exactly how `org_label` and `models` came to differ.
+    # two ways.
     options = Options()
-    for patch in ALL_PATCHES:
-        if patch.setting is not None:
-            patch.setting.from_cache(options, data)
+    try:
+        for patch in ALL_PATCHES:
+            if patch.setting is not None:
+                patch.setting.from_cache(options, data.get(patch.setting.key))
+    except ValueError:
+        return None
     return Selection(
         patches=[p for p in saved if p in known],
-        dropped_patches=[p for p in saved if isinstance(p, str) and p not in known],
+        dropped_patches=[p for p in saved if p not in known],
         options=options,
     )
 
 
 def save(selection: Selection) -> None:
-    """Best-effort: a cache that cannot be written just means no pre-fill next
-    run -- it must never break the patch it was only trying to remember."""
+    """Persist the complete preference set or report the write failure."""
+    _write(selection.payload())
+
+
+def _write(data: dict[str, object]) -> None:
+    path = cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".selection-", dir=path.parent)
+    tmp = Path(temporary)
     try:
-        path = cache_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        # Each configurable patch writes its own cache key(s) from the same
-        # `Options` it reads at bake time, so the cache format is the settings'
-        # to declare, not a second hand-kept list beside the manifest's.
-        data: dict[str, object] = {"patches": selection.patches}
-        for patch in ALL_PATCHES:
-            if patch.setting is not None:
-                data.update(patch.setting.to_cache(selection.options))
-        tmp.write_text(json.dumps(data, indent=2) + "\n", "utf8")
+        with os.fdopen(fd, "w", encoding="utf8") as stream:
+            stream.write(json.dumps(data, indent=2) + "\n")
         tmp.replace(path)
-    except OSError:
-        pass
+    finally:
+        tmp.unlink(missing_ok=True)

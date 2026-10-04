@@ -32,7 +32,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .. import js
-from ..codex import EFFORT_LADDER
+from ..custom_models import EFFORT_LADDER
 from ..js import Edit, Source
 from .base import GROUP_MODELS, GROUP_OUTPUT, Options, Outcome, Patch
 
@@ -43,7 +43,7 @@ from .base import GROUP_MODELS, GROUP_OUTPUT, Options, Outcome, Patch
 #: entry goes, exactly one both accounts think-time and absorbs the entry into
 #: the open group. Neither fact is a shape, so neither moved when 2.1.232
 #: extracted the summary into two helper calls and split a comma-fused `if` --
-#: the reshape that killed the eight-line regex this replaced.
+#: a reshape anything modelling the arm body dies on.
 _THINK_TIME = "thoughtForMs"
 
 #: The group's summary line, written from the entry that is being absorbed.
@@ -482,7 +482,7 @@ def _max_effort(source: Source, _options: Options, outcome: Outcome) -> Source:
         # noise that is skipped rather than described, so "the first array in
         # there" is a guess about the noise. Never by the sequence it lists them
         # in, or by there being nothing else in it: a set is not a sequence here
-        # either (`codex-models/validator` says so in as many words), so an
+        # either (`custom-models/validator` says so in as many words), so an
         # upstream reshuffle or one more level is a spelling of the same array,
         # and demanding the exact list made both read as the whole
         # persisted-settings schema having vanished.
@@ -505,7 +505,6 @@ PATCHES = [
     Patch(
         id="thinking-summaries",
         title="Fix blank thinking blocks",
-        summary="Opt out of the server-side experiment bucket that can return empty thinking blocks on some accounts. Drops all experiment enrollment, not just this one.",
         group=GROUP_OUTPUT,
         fn=_thinking_summaries,
         anchors=(_BUCKET_HEADER, _BUCKET_READ),
@@ -513,7 +512,6 @@ PATCHES = [
     Patch(
         id="thinking-inline",
         title="Always show thinking",
-        summary="Render thinking blocks inline instead of hiding them behind ctrl+o.",
         group=GROUP_OUTPUT,
         fn=_thinking_inline,
         anchors=(_THINKING_LABEL, _TRANSCRIPT, _SUMMARY, _THINK_TIME),
@@ -521,7 +519,6 @@ PATCHES = [
     Patch(
         id="max-effort",
         title="Persist max effort",
-        summary="Let /effort max save as your default for new sessions, like the other levels.",
         group=GROUP_MODELS,
         fn=_max_effort,
         anchors=('"xhigh"', f"{_EFFORT_PROP}:", "Persisted effort level"),

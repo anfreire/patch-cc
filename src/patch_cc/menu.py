@@ -1,12 +1,9 @@
 """The interactive menu shown by bare ``patch-cc``.
 
 A fullscreen frame: fixed title and status on top, fixed key hints at the
-bottom, and only the patch list scrolling in between. Every choice is a picker
-driven by what the binary itself offers -- agents and models are discovered,
-never typed -- and typing exists only where a value is genuinely free text
-(the startup name, the --version marker, the org/email label). All
-configuration happens in centered modals floating over the dimmed list; the
-list itself never grows sub-rows. ``s`` saves, and the same frame then shows
+bottom, and only the patch list scrolling in between. Configuration happens
+in centered modals floating over the dimmed list; the
+list itself never grows sub-rows. ``s`` applies, and the same frame then shows
 the per-patch results.
 
 The engine is deliberately small: ``blessed`` owns the terminal (fullscreen,
@@ -16,10 +13,9 @@ the dimmed background, and the whole thing is painted with absolute cursor
 moves. There is no widget toolkit, no focus system, and no event bubbling --
 one loop, one state machine.
 
-Pre-selection comes from the binary's own manifest when it is patched -- the
-binary is the state -- falling back to the cached last selection, then to the
-defaults. Nothing is written until the user saves; quitting with unsaved
-changes asks first.
+Saved preferences pre-fill the menu, falling back to the binary manifest and
+then defaults. The header distinguishes edits in this session from saved changes
+awaiting apply. Only edits in this session require confirmation when quitting.
 """
 
 from __future__ import annotations
@@ -28,7 +24,7 @@ import sys
 import textwrap
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from blessed import Terminal
@@ -41,9 +37,9 @@ from rich.style import Style
 from rich.text import Text
 
 from . import cache, locate, patcher
+from . import custom_models as custom
 from .bun import Bundle, BunError, container
-from .codex import DEFAULT_PORT, is_valid_port
-from .codex.models import CodexModel, discover, reconcile
+from .custom_models import CustomModel
 from .patches import (
     ALL_PATCHES,
     DEFAULT_BRAND,
@@ -55,7 +51,16 @@ from .patches import (
     derived_brand,
 )
 from .patches.agents import INHERIT, BuiltinAgent, discover_agents, discover_models
-from .ui import MARKS, applied_value, console, err, findings, gateway_note, verdicts
+from .patches.custom_models import claimed_model_names, validate_models
+from .ui import (
+    MARKS,
+    applied_value,
+    console,
+    endpoint_note,
+    err,
+    findings,
+    verdicts,
+)
 
 if TYPE_CHECKING:
     from .doctor import DryRun, Status
@@ -75,10 +80,21 @@ _PANEL_WIDTH = 72
 _SPINNER = ["·", "✢", "✳", "✺", "✳", "✢"]
 
 
+#: Where a key sits on a hint line: whatever else the view offers first, then
+#: ``enter``, then the key that leaves it.
+_HINT_RANK = {"enter": 1, "esc": 2, "q": 2}
+
+
 def _hints(*pairs: tuple[str, str]) -> Text:
-    """Key hints as ``key label`` pairs: the key accented, the label quiet."""
+    """Key hints as ``key label`` pairs: the key accented, the label quiet.
+
+    Ordered here, once -- the view's own keys in the order given, then
+    ``enter``, then ``esc``/``q`` -- so every surface reads the same way and
+    no view can spell the order its own way.
+    """
     text = Text()
-    for i, (key, label) in enumerate(pairs):
+    ordered = sorted(pairs, key=lambda pair: _HINT_RANK.get(pair[0], 0))
+    for i, (key, label) in enumerate(ordered):
         if i:
             text.append("  ·  ", style="dim")
         text.append(key, style=_ACCENT)
@@ -88,9 +104,13 @@ def _hints(*pairs: tuple[str, str]) -> Text:
 
 #: Patches whose row opens a modal on enter instead of plain toggling --
 #: exactly the ones that carry a configurable value, which is what
-#: :attr:`Patch.option` declares. Derived, so a new option-carrying patch
-#: cannot be left off this list with its hint reading "enter toggle".
-_CONFIGURABLE = {patch.id for patch in ALL_PATCHES if patch.option}
+#: :attr:`Patch.setting` declares. Derived, so a new such patch cannot be
+#: left off this list with its hint reading "enter toggle".
+_CONFIGURABLE = {patch.id for patch in ALL_PATCHES if patch.setting is not None}
+
+#: Where `?` sends you from the custom-models submenu: the README section that
+#: explains endpoints, keys, windows and ladders. One home for the address.
+_CUSTOM_MODELS_HELP = "https://github.com/anfreire/patch-cc#custom-models"
 
 
 # ----------------------------------------------------------------- rows
@@ -105,12 +125,6 @@ class HeaderRow:
 class PatchRow:
     patch: Patch
     on: bool
-    #: Why this build offers no surface for the patch (upstream retired it), or
-    #: ``None`` while it does. A dimmed row -- visible, never selectable: what
-    #: the binary cannot support is shown rather than offered, the same
-    #: discovery rule the agent and model pickers follow, and the row un-dims by
-    #: itself on a build that carries the surface again.
-    absent: str | None = None
 
 
 @dataclass(slots=True)
@@ -132,10 +146,10 @@ class TextRow:
 
 
 @dataclass(slots=True)
-class _CodexPick:
-    """One model your plan offers, as the checklist edits it."""
+class _ModelPick:
+    """One saved or discovered model in the draft checklist."""
 
-    model: CodexModel
+    model: CustomModel
     on: bool = False
 
 
@@ -154,10 +168,14 @@ class MenuModel:
     patch_rows: dict[str, PatchRow] = field(default_factory=dict)
     agent_rows: list[AgentRow] = field(default_factory=list)
     text_rows: dict[str, TextRow] = field(default_factory=dict)
-    #: Codex models to register and the port to route them to -- edited in the
-    #: Codex submenu, seeded and saved exactly like every other choice here.
-    codex_models: list[CodexModel] = field(default_factory=list)
-    codex_port: int = DEFAULT_PORT
+    #: Custom models to register -- edited in the
+    #: Custom models submenu, seeded and saved exactly like every other choice here.
+    custom_models: list[CustomModel] = field(default_factory=list)
+    endpoint: str = ""
+    pending_key: str | None = field(default=None, repr=False)
+    #: Why the saved selection was passed over at seed time, if it was -- shown
+    #: once when the menu opens, since the next apply overwrites that file.
+    notice: str | None = None
 
     @classmethod
     def build(
@@ -173,30 +191,52 @@ class MenuModel:
             models=models,
         )
 
-        seed = model._seed()
-        model.codex_models = list(seed.options.codex_models)
-        model.codex_port = seed.options.codex_port
+        seed, unreadable = cache.seed(status.manifest)
+        if unreadable is not None:
+            model.notice = (
+                f"{unreadable} The menu shows the binary's current state instead; "
+                "applying replaces the file."
+            )
+        model.custom_models = list(seed.options.custom_models)
+        model.endpoint = seed.options.endpoint
         for group in GROUP_ORDER:
             for patch in by_group().get(group, []):
-                # A seed (manifest or cache) may name a patch this build has no
-                # surface for -- a cached org-label replayed onto 2.1.246 -- and
-                # a dimmed row cannot be on: the selection the screen shows is
-                # the selection that runs.
-                why = patch.absent(pristine.source)
-                model.patch_rows[patch.id] = PatchRow(
-                    patch, why is None and patch.id in seed.patches, absent=why
-                )
+                # A patch this build has no surface for gets no row at all: what
+                # the binary cannot support is not offered, the same discovery
+                # rule the agent and model pickers follow, and a build that
+                # carries the surface again shows the row by itself. A seed
+                # (manifest or cache) may still name it -- a saved org-label
+                # replayed onto 2.1.246 -- and the selection the screen shows
+                # is the selection that runs.
+                if patch.absent(pristine.source) is None:
+                    model.patch_rows[patch.id] = PatchRow(
+                        patch, patch.id in seed.patches
+                    )
 
-        # A Codex id this run would register is a valid pin too, so a remembered
-        # codex override survives instead of snapping back to keep.
-        offered = {*models, *(m.id for m in model.codex_models)}
+        # A custom id this run would register is a valid pin too, so a remembered
+        # custom override survives instead of snapping back to keep.
+        offered = {*models, *custom.model_names(model.custom_models)}
+        left_out = [f"patch {pid}" for pid in seed.dropped_patches]
         for agent in agents:
             picked = seed.options.subagent_models.get(agent.name)
-            model.agent_rows.append(
-                AgentRow(agent, picked if picked in offered else _KEEP)
+            if picked is not None and picked not in offered:
+                left_out.append(f"pin {agent.name}={picked}")
+                picked = None
+            model.agent_rows.append(AgentRow(agent, picked or _KEEP))
+        if left_out:
+            # What the saved selection asks for that this tool or this build
+            # does not offer -- a patch id this tool lacks, a pin to a model the
+            # build lacks. Said once, where the replay would warn, and the next
+            # apply writes the file without it. The unreadable-file note and
+            # this one cannot both apply: nothing was read from that file.
+            model.notice = (
+                "The saved selection names what this patch-cc or this build "
+                "does not offer, so it was left out: "
+                + ", ".join(left_out)
+                + ". Applying rewrites the saved selection without it."
             )
 
-        brand = seed.options.brand if seed.options.rebrands else derived_brand()
+        brand = seed.options.brand
         model.text_rows["brand"] = TextRow("brand", "name", brand)
         model.text_rows["suffix"] = TextRow(
             "suffix", "marker", seed.options.version_suffix
@@ -204,107 +244,50 @@ class MenuModel:
         model.text_rows["org"] = TextRow("org", "label", seed.options.org_label)
         return model
 
-    def _seed(self) -> cache.Selection:
-        """Manifest > cached last selection > defaults."""
-        manifest = self.status.manifest
-        if manifest:
-            seed = cache.Selection()
-            seed.patches = [
-                p for p in manifest.get("patches", []) if isinstance(p, str)
-            ] or seed.patches
-            # Each configurable patch reads its own value back out of the manifest
-            # it wrote (`Patch.setting`), so the binary pre-selects the menu
-            # through the one home the manifest was written through -- a key the
-            # binary does not carry simply leaves that setting at its default.
-            options = Options()
-            for patch in ALL_PATCHES:
-                setting = patch.setting
-                if setting is not None and setting.manifest_key in manifest:
-                    setting.from_manifest(options, manifest[setting.manifest_key])
-            seed.options = options
-            return seed
-        return cache.load()
-
     def rows(self) -> list[Row]:
         rows: list[Row] = []
         for group in GROUP_ORDER:
-            patches = by_group().get(group, [])
-            if not patches:
-                continue
-            rows.append(HeaderRow(group))
-            rows.extend(self.patch_rows[patch.id] for patch in patches)
+            offered = [
+                self.patch_rows[patch.id]
+                for patch in by_group().get(group, [])
+                if patch.id in self.patch_rows
+            ]
+            if offered:
+                rows.append(HeaderRow(group))
+                rows.extend(offered)
         return rows
 
     def overridden(self) -> int:
         return sum(1 for row in self.agent_rows if row.choice != _KEEP)
 
     def applied_ids(self) -> set[str]:
-        """What the binary claims, limited to what this build still offers.
+        """What the binary claims, limited to what this build offers.
 
-        A manifest written by an older patch-cc can name a patch that has since
-        been retired (docs/PLAYBOOK.md keeps the list). There is no row for one,
-        so counting it would leave the selection differing from the binary
-        forever -- a permanent "unsaved", and a quit-confirm, on a binary nobody
-        has touched.
+        A manifest can name a patch this tool has no row for; counting it would
+        leave the selection differing from the binary forever -- a permanent
+        "unsaved", and a quit-confirm, on a binary nobody has touched.
         """
         return {pid for pid in self.status.patch_ids if pid in self.patch_rows}
 
     # -- what apply would do
 
     def selection(self) -> cache.Selection:
-        selected = [pid for pid, row in self.patch_rows.items() if row.on]
-        options = Options()
-        # Only pin a target that still exists: a Codex model can vanish mid-session
-        # when the Codex submenu unpicks it, and a stale pin would be written --
-        # and cached -- only for the patch layer to skip it.
-        offered = {*self.models, *(m.id for m in self.codex_models)}
-        overrides = {
-            row.agent.name: row.choice
-            for row in self.agent_rows
-            if row.choice != _KEEP and row.choice in offered
-        }
-        if "subagent-models" in selected:
-            if overrides:
-                options.subagent_models = overrides
-            else:
-                selected.remove("subagent-models")
-        if "branding" in selected:
-            brand = self.text_rows["brand"].value.strip() or derived_brand()
-            if brand == DEFAULT_BRAND:
-                selected.remove("branding")
-            else:
-                options.brand = brand
-        if "version-marker" in selected:
-            options.version_suffix = (
-                self.text_rows["suffix"].value.strip() or DEFAULT_SUFFIX
-            )
-        if "org-label" in selected:
-            # Empty stays empty: it is the "hide the segment" value, so unlike
-            # brand and suffix there is no default to fall back to.
-            options.org_label = self.text_rows["org"].value.strip()
-        # A subagent pinned to a Codex model needs codex-models applied too -- it
-        # registers the id and installs the redirect, without which the pin
-        # resolves to nothing. That coupling is enforced where the user can see
-        # it (`_open_model_modal` turns the row on with the pin), never here:
-        # silently adding the patch during serialisation applied a row the screen
-        # was drawing as off. So a pin whose patch is switched off is dropped, and
-        # the visible selection is what runs.
-        codex_ids = {m.id for m in self.codex_models}
-        if "codex-models" not in selected:
-            options.subagent_models = {
-                agent: model
-                for agent, model in options.subagent_models.items()
-                if model not in codex_ids
-            }
-            if not options.subagent_models and "subagent-models" in selected:
-                selected.remove("subagent-models")
-        if "codex-models" in selected:
-            if self.codex_models:
-                options.codex_models = list(self.codex_models)
-                options.codex_port = self.codex_port
-            else:
-                selected.remove("codex-models")  # nothing chosen to register
-        return cache.Selection(patches=selected, options=options)
+        """All preferences; Selection.active derives what the binary should receive."""
+        options = Options(
+            brand=self.text_rows["brand"].value.strip() or derived_brand(),
+            version_suffix=self.text_rows["suffix"].value.strip() or DEFAULT_SUFFIX,
+            org_label=self.text_rows["org"].value.strip(),
+            subagent_models={
+                row.agent.name: row.choice
+                for row in self.agent_rows
+                if row.choice != _KEEP
+            },
+            custom_models=list(self.custom_models),
+            endpoint=self.endpoint,
+        )
+        return cache.Selection(
+            [pid for pid, row in self.patch_rows.items() if row.on], options
+        )
 
 
 # ----------------------------------------------------------------- modals
@@ -319,25 +302,31 @@ class PickModal:
 
     def __init__(
         self,
-        title: str,
+        title: str | Text | None,
         items: list[str],
         label: Callable[[str, bool], Text],
         *,
         current: str | None = None,
         on_pick: Callable[[str], None] | None = None,
+        shortcuts: dict[str, str] | None = None,
         hint: Text | None = None,
         width: int = 46,
+        description: Text | None = None,
     ) -> None:
         self.title = title
+        self.description = description
         self.items = items
         self.label = label
         self.on_pick = on_pick
+        self.shortcuts = shortcuts or {}
         self.hint = (
             hint if hint is not None else _hints(("enter", "select"), ("esc", "cancel"))
         )
         self.width = width
         self.cursor = items.index(current) if current in items else 0
         self.finish: Callable[[object], None] = lambda result: None
+        self.error = ""
+        self.page_size = len(items)
 
     def handle(self, key: str) -> None:
         if key in ("down", "j"):
@@ -348,8 +337,8 @@ class PickModal:
             self.cursor = 0
         elif key == "end":
             self.cursor = len(self.items) - 1
-        elif key == "enter":
-            item = self.items[self.cursor]
+        elif key == "enter" or key in self.shortcuts:
+            item = self.shortcuts.get(key, self.items[self.cursor])
             if self.on_pick is not None:
                 self.on_pick(item)
             else:
@@ -357,10 +346,18 @@ class PickModal:
         elif key in ("escape", "q"):
             self.finish(None)
 
-    def render(self) -> Panel:
-        inner = self.width - 8
+    def render(self, width: int | None = None, height: int | None = None) -> Panel:
+        width = width or self.width
+        inner = width - 8
         body = Text()
-        for i, item in enumerate(self.items):
+        if self.description is not None:
+            identity = self.description.copy()
+            identity.truncate(inner, overflow="ellipsis")
+            body.append_text(identity)
+            body.append("\n\n")
+        start = max(0, self.cursor - self.page_size + 1)
+        for i in range(start, min(len(self.items), start + self.page_size)):
+            item = self.items[i]
             current = i == self.cursor
             line = Text()
             line.append("❯ " if current else "  ", style=_ACCENT)
@@ -369,11 +366,13 @@ class PickModal:
             body.append_text(line)
             body.append("\n")
         return Panel(
-            Group(body, Align.center(self.hint)),
+            Group(body, Text(self.error, style=_WARN), Align.center(self.hint)),
             box=box.ROUNDED,
             border_style=_ACCENT,
             padding=(1, 3),
-            title=Text(self.title, style=f"bold {_ACCENT}"),
+            title=Text(self.title, style=f"bold {_ACCENT}")
+            if isinstance(self.title, str)
+            else self.title,
             title_align="center",
         )
 
@@ -388,23 +387,39 @@ class InputModal:
         *,
         width: int = 52,
         max_len: int = 48,
-        digits_only: bool = False,
+        masked: bool = False,
+        placeholder: str = "",
+        validate: Callable[[str], object] | None = None,
     ) -> None:
         self.title = title
         self.value = value
         self.cur = len(value)
-        self.hint = _hints(("enter", "save"), ("esc", "cancel"))
         self.width = width
         self.max_len = max_len
-        #: Reject non-digit keys at input time (a numeric field, e.g. the port).
-        self.digits_only = digits_only
+        self.masked = masked
+        self.revealed = False
+        self.placeholder = placeholder
+        self.validate = validate
+        self.error = ""
         self.finish: Callable[[object], None] = lambda result: None
 
     def handle(self, key: str) -> None:
         if key == "enter":
+            try:
+                if self.validate is not None:
+                    self.validate(self.value)
+            except ValueError as exc:
+                self.error = str(exc)
+                return
             self.finish(self.value)
         elif key == "escape":
             self.finish(None)
+        elif key == "tab" and not self.value and self.placeholder:
+            self.value = self.placeholder
+            self.cur = len(self.value)
+            self.error = ""
+        elif key == "tab" and self.masked:
+            self.revealed = not self.revealed
         elif key == "left":
             self.cur = max(0, self.cur - 1)
         elif key == "right":
@@ -421,23 +436,31 @@ class InputModal:
             self.value = self.value[: self.cur] + self.value[self.cur + 1 :]
         else:
             ch = " " if key == "space" else key
-            # Match ASCII 0-9 only: str.isdigit() also passes superscripts like
-            # "²" (a single AZERTY/AltGr keypress) that int() then rejects.
-            if self.digits_only and ch not in "0123456789":
-                return
             if len(ch) == 1 and ch.isprintable() and len(self.value) < self.max_len:
                 self.value = self.value[: self.cur] + ch + self.value[self.cur :]
                 self.cur += 1
 
-    def render(self) -> Panel:
+    def render(self, width: int | None = None, height: int | None = None) -> Panel:
+        width = width or self.width
         line = Text()
         line.append("❯ ", style=_ACCENT)
-        line.append(self.value[: self.cur])
-        at = self.value[self.cur : self.cur + 1] or " "
-        line.append(at, style="reverse")
-        line.append(self.value[self.cur + 1 :])
+        displayed = (
+            "•" * len(self.value) if self.masked and not self.revealed else self.value
+        ) or self.placeholder
+        style = "dim" if self.placeholder and not self.value else ""
+        start = max(0, self.cur - (width - 12))
+        line.append(displayed[start : self.cur], style=style)
+        at = displayed[self.cur : self.cur + 1] or " "
+        line.append(at, style=f"reverse {style}")
+        line.append(displayed[self.cur + 1 : start + width - 10], style=style)
+        hints = []
+        if self.placeholder and not self.value:
+            hints.append(("tab", "fill"))
+        if self.masked:
+            hints.append(("tab", "hide" if self.revealed else "show"))
+        hint = _hints(*hints, ("enter", "done"), ("esc", "cancel"))
         return Panel(
-            Group(line, Text(""), Align.center(self.hint)),
+            Group(line, Text(self.error, style=_WARN), Align.center(hint)),
             box=box.ROUNDED,
             border_style=_ACCENT,
             padding=(1, 3),
@@ -464,7 +487,8 @@ class ConfirmModal:
         elif key in ("n", "escape", "q"):
             self.finish(False)
 
-    def render(self) -> Panel:
+    def render(self, width: int | None = None, height: int | None = None) -> Panel:
+        width = width or self.width
         return Panel(
             Group(
                 Align.center(Text(self.question, style="bold")),
@@ -479,54 +503,113 @@ class ConfirmModal:
         )
 
 
-class CheckModal:
-    """A centered checklist: space toggles, enter confirms.
+class NoticeModal:
+    """A dismissible message, shared by warnings and field help."""
 
-    Used for "which Codex models to enable". Each row is a discovered model;
-    reasoning effort is not chosen here -- it rides in each request (Claude
-    Code's live ``/effort``), so one enabled model serves every level.
+    def __init__(
+        self, message: str, *, title: str = "Warning", tone: str = _WARN
+    ) -> None:
+        self.message = message
+        self.scroll = 0
+        self.page_size = 1
+        self.title = title
+        self.tone = tone
+        self.width = 68
+        self.finish: Callable[[object], None] = lambda result: None
+
+    def handle(self, key: str) -> None:
+        if key in ("enter", "escape", "q"):
+            self.finish(None)
+        elif key in ("down", "j"):
+            self.scroll += 1
+        elif key in ("up", "k"):
+            self.scroll = max(0, self.scroll - 1)
+
+    def render(self, width: int | None = None, height: int | None = None) -> Panel:
+        width = width or self.width
+        lines = [
+            line
+            for paragraph in self.message.split("\n")
+            for line in (textwrap.wrap(paragraph, width - 8) or [""])
+        ]
+        self.page_size = max(1, (height or 80) - 7)
+        self.scroll = min(self.scroll, max(0, len(lines) - self.page_size))
+        hints = [("enter", "close"), ("esc", "close")]
+        if len(lines) > self.page_size:
+            hints.append(("↑↓", "scroll"))
+        return Panel(
+            Group(
+                Text("\n".join(lines[self.scroll : self.scroll + self.page_size])),
+                Text(""),
+                Align.center(_hints(*hints)),
+            ),
+            box=box.ROUNDED,
+            border_style=self.tone,
+            padding=(1, 3),
+            title=Text(self.title, style=f"bold {self.tone}"),
+            title_align="center",
+        )
+
+
+class CheckModal:
+    """A checklist of models; esc goes back with what is ticked.
+
+    Nothing here is a draft to cancel: ticks, fetched rows and the edits made
+    one level down all stay, the way a pick in the agents list stays. One rule
+    for every list in the menu -- esc is back -- so an edit kept with "back"
+    cannot be lost by the next "back".
     """
 
     def __init__(
         self,
-        title: str,
-        items: list[_CodexPick],
+        items: list[_ModelPick],
         *,
-        hint: Text | None = None,
-        width: int = 64,
+        on_details: Callable[[_ModelPick], None],
+        on_fetch: Callable[[], None],
+        on_add: Callable[[], None],
     ) -> None:
-        self.title = title
         self.items = items
         self.cursor = 0
-        self.width = width
-        self.hint = hint or _hints(
-            ("space", "toggle"), ("enter", "done"), ("esc", "cancel")
-        )
+        self.on_details = on_details
+        self.on_fetch = on_fetch
+        self.on_add = on_add
+        self.error = ""
+        self.width = 76
+        self.page_size = 10
         self.finish: Callable[[object], None] = lambda result: None
 
     def handle(self, key: str) -> None:
+        self.error = ""
         if key in ("escape", "q"):
-            self.finish(None)
-            return
-        if key == "enter":
             self.finish([item for item in self.items if item.on])
-            return
-        if not self.items:
-            return
-        if key in ("down", "j"):
-            self.cursor = (self.cursor + 1) % len(self.items)
-        elif key in ("up", "k"):
-            self.cursor = (self.cursor - 1) % len(self.items)
-        elif key == "space":
-            item = self.items[self.cursor]
-            item.on = not item.on
+        elif key == "tab":
+            self.on_fetch()
+        elif key == "a":
+            self.on_add()
+        elif self.items:
+            if key in ("down", "j"):
+                self.cursor = (self.cursor + 1) % len(self.items)
+            elif key in ("up", "k"):
+                self.cursor = (self.cursor - 1) % len(self.items)
+            elif key == "home":
+                self.cursor = 0
+            elif key == "end":
+                self.cursor = len(self.items) - 1
+            elif key == "space":
+                item = self.items[self.cursor]
+                item.on = not item.on
+            elif key == "enter":
+                self.on_details(self.items[self.cursor])
 
-    def render(self) -> Panel:
-        inner = self.width - 8
+    def render(self, width: int | None = None, height: int | None = None) -> Panel:
+        width = width or self.width
+        inner = width - 8
         body = Text()
         if not self.items:
-            body.append("  no models offered by your plan\n", style="dim")
-        for i, item in enumerate(self.items):
+            body.append("  No models yet.\n", style="dim")
+        start = max(0, self.cursor - self.page_size + 1)
+        for i in range(start, min(len(self.items), start + self.page_size)):
+            item = self.items[i]
             current = i == self.cursor
             line = Text()
             line.append("❯ " if current else "  ", style=_ACCENT)
@@ -534,24 +617,30 @@ class CheckModal:
                 "◉ " if item.on else "○ ",
                 style=_ACCENT if item.on else f"dim {_ACCENT}",
             )
-            line.append(
-                item.model.label,
-                style="bold" if current else ("" if item.on else "dim"),
-            )
+            line.append(item.model.label, style="bold" if current else "")
+            if item.model.name:
+                line.append(f" · {item.model.id}", style="dim")
             line.truncate(inner, overflow="ellipsis")
             body.append_text(line)
             body.append("\n")
+        hints = _hints(
+            ("tab", "fetch"),
+            ("space", "toggle"),
+            ("a", "add"),
+            ("enter", "details"),
+            ("esc", "back"),
+        )
         return Panel(
-            Group(body, Align.center(self.hint)),
+            Group(body, Text(self.error, style=_WARN), Align.center(hints)),
             box=box.ROUNDED,
             border_style=_ACCENT,
             padding=(1, 3),
-            title=Text(self.title, style=f"bold {_ACCENT}"),
+            title=Text("Models", style=f"bold {_ACCENT}"),
             title_align="center",
         )
 
 
-Modal = PickModal | InputModal | ConfirmModal | CheckModal
+Modal = PickModal | InputModal | ConfirmModal | CheckModal | NoticeModal
 
 
 # ----------------------------------------------------------------- app
@@ -572,10 +661,15 @@ class MenuApp:
             rich_console if rich_console is not None else Console(force_terminal=True)
         )
         self.model = model
+        self._initial = model.selection().payload()
         self.cursor = 0
         self.view = "select"  # select | busy | report | doctor
         self.stack: list[tuple[Modal, Callable[[object], None] | None]] = []
         self.report: patcher.PatchReport | None = None
+        #: What the last apply could not do *after* the binary was written --
+        #: remember the selection, save the key. Shown on the report, never in
+        #: its place: the patch succeeded, and the report is the proof.
+        self.report_note = ""
         self.doctor_result: DryRun | None = None
         self.busy_message = ""
         self.flash = ""
@@ -584,10 +678,8 @@ class MenuApp:
         self._exit: int | None = None
         #: A worker's tagged result, read by the loop: (kind, payload, error).
         self._worker_result: tuple[str, Any, str | None] | None = None
-        #: Set (from a busy-view key) to abandon an in-flight sign-in poll.
-        self._cancel = threading.Event()
-        #: The codex-models row awaiting the submenu's result.
-        self._codex_row: PatchRow | None = None
+        #: The custom-models row awaiting the submenu's result.
+        self._custom_row: PatchRow | None = None
         self._frame = 0
         self._scroll = 0
         self._needs_paint = True
@@ -595,6 +687,8 @@ class MenuApp:
         color = self.console.color_system
         self._color_system = COLOR_SYSTEMS.get(color) if color else None
         self._clamp_cursor(0)
+        if model.notice:
+            self._push(NoticeModal(model.notice, title="Saved selection"), None)
 
     # ---------------------------------------------------- loop
 
@@ -620,10 +714,6 @@ class MenuApp:
                         self._on_key("ctrl+c")
                     continue
                 if self.view == "busy":
-                    # A slow sign-in poll is the one busy state a key can touch:
-                    # esc asks it to give up.
-                    if self._key_name(keystroke) == "escape":
-                        self._cancel.set()
                     self._poll_worker()
                     continue
                 key = self._key_name(keystroke)
@@ -655,6 +745,7 @@ class MenuApp:
                 term.KEY_LEFT: "left",
                 term.KEY_RIGHT: "right",
                 term.KEY_ENTER: "enter",
+                term.KEY_TAB: "tab",
                 term.KEY_ESCAPE: "escape",
                 term.KEY_BACKSPACE: "backspace",
                 term.KEY_DELETE: "delete",
@@ -666,6 +757,7 @@ class MenuApp:
         return {
             "\r": "enter",
             "\n": "enter",
+            "\t": "tab",
             " ": "space",
             "\x7f": "backspace",
             "\x08": "backspace",
@@ -709,16 +801,10 @@ class MenuApp:
             self.cursor = len(rows) - 1
             self._clamp_cursor(-1)
         elif key == "space" and isinstance(row, PatchRow):
-            if row.absent is None:
-                row.on = not row.on
-            else:
-                self.flash = row.absent
+            row.on = not row.on
         elif key == "enter" and isinstance(row, PatchRow):
-            if row.absent is None:
-                self._activate(row)
-            else:
-                self.flash = row.absent
-        elif key in ("s", "a"):
+            self._activate(row)
+        elif key == "s":
             self._start_apply()
         elif key == "d":
             self._start_doctor()
@@ -737,13 +823,11 @@ class MenuApp:
             if not self.model.agent_rows:
                 self.flash = "no agents discovered in this bundle"
                 return
-            row.on = True
             self._open_agents_modal()
         elif patch_id in text_keys:
-            row.on = True
             self._open_text_modal(text_keys[patch_id])
-        elif patch_id == "codex-models":
-            self._open_codex_menu(row)  # submenu: pick models / set gateway port
+        elif patch_id == "custom-models":
+            self._open_custom_menu(row)  # submenu: pick models / set endpoint URL
         else:
             row.on = not row.on
 
@@ -783,32 +867,30 @@ class MenuApp:
                 label,
                 on_pick=pick,
                 width=52,
-                hint=_hints(("enter", "choose model"), ("esc", "done")),
+                hint=_hints(("enter", "choose model"), ("esc", "back")),
             ),
             None,
         )
 
     def _open_model_modal(self, agent_row: AgentRow) -> None:
-        codex_ids = [m.id for m in self.model.codex_models]
-        items = [_KEEP, *self.model.models, *codex_ids]
-        codex_set = set(codex_ids)
+        custom_ids = [model.id for model in self.model.custom_models]
+        items = [_KEEP, *self.model.models, *custom_ids]
+        custom_set = set(custom_ids)
 
         def label(value: str, _selected: bool) -> Text:
             """The handle you pick, then a dim parenthetical explaining it.
 
             Every row is that one shape -- what `keep` would leave in place, what
-            `inherit` resolves to, where a Codex model came from -- so the branches
-            below only choose the words, never how they are drawn. Written three
-            ways, only the codex row's aside was dim and the other two read as
-            part of the name.
+            `inherit` resolves to, where a custom model came from -- so the branches
+            below only choose the words, never how they are drawn.
             """
             head, note = value, ""
             if value == _KEEP:
                 head, note = "keep default", agent_row.agent.effective_model
             elif value == INHERIT:
                 note = "main model"
-            elif value in codex_set:
-                note = "codex"
+            elif value in custom_set:
+                note = "custom"
             text = Text(head)
             if note:
                 text.append(f" ({note})", style="dim")
@@ -818,18 +900,21 @@ class MenuApp:
             if not isinstance(choice, str):
                 return
             agent_row.choice = choice
-            # A Codex model only resolves once codex-models registers it, so the
+            self.model.patch_rows["subagent-models"].on = bool(self.model.overridden())
+            # A custom model only resolves once custom-models registers it, so the
             # pin selects that row too -- here, where the tick visibly moves,
             # rather than at save time behind a row still drawn as off.
-            if choice in codex_set:
-                self.model.patch_rows["codex-models"].on = True
+            if choice in custom_set:
+                self.model.patch_rows["custom-models"].on = True
 
         self._push(
             PickModal(
                 f"Model for {agent_row.agent.name}",
                 items,
                 label,
-                current=agent_row.choice,
+                current=custom.aliases(self.model.custom_models).get(
+                    agent_row.choice, agent_row.choice
+                ),
                 width=46,
             ),
             picked,
@@ -848,161 +933,462 @@ class MenuApp:
             # the segment -- where an empty brand or marker means "never mind".
             if isinstance(value, str) and (value.strip() or key == "org"):
                 row.value = value.strip()
+                patch_id = {
+                    "brand": "branding",
+                    "suffix": "version-marker",
+                    "org": "org-label",
+                }[key]
+                self.model.patch_rows[patch_id].on = (
+                    key != "brand" or row.value != DEFAULT_BRAND
+                )
 
         self._push(InputModal(titles[key], row.value), entered)
 
-    # -- codex submenu: pick models / set the gateway port ------------------
-    #
-    # Enter on the codex-models row opens this chooser instead of jumping
-    # straight into sign-in: `enter` is the row's only free affordance (space
-    # toggles the row), so both settings hang off it. Each choice closes the
-    # chooser before it runs, so the network flow below never fires with a modal
-    # still on the stack. Nothing here writes to disk -- both settings are part of
-    # the selection, saved with it by `s` and by nothing else.
+    # -- custom models: one configuration, populated manually or by discovery
 
-    def _open_codex_menu(self, row: PatchRow) -> None:
-        model = self.model
-
-        def label(item: str, selected: bool) -> Text:
-            head = "bold" if selected else ""
-            if item == "models":
-                n = len(model.codex_models)
-                text = Text("Pick models", style=head)
-                text.append(f"  {n} chosen" if n else "  none chosen", style="dim")
-                return text
-            text = Text("Gateway port", style=head)
-            text.append(f"  {model.codex_port}", style=_VALUE)
-            return text
-
-        def chosen(item: object) -> None:
-            if item == "models":
-                self._open_codex(row)
-            elif item == "port":
-                self._open_codex_port()
-
-        self._push(
-            PickModal(
-                "Codex",
-                ["models", "port"],
-                label,
-                width=46,
-                hint=_hints(("enter", "open"), ("esc", "close")),
-            ),
-            chosen,
+    def _endpoint_key(self) -> str:
+        return (
+            self.model.pending_key
+            if self.model.pending_key is not None
+            else custom.read_key()
         )
 
-    def _open_codex_port(self) -> None:
-        model = self.model
+    def _open_custom_menu(self, row: PatchRow) -> None:
+        self._custom_row = row
+        # Read once on the way in, not per repaint: the row only has to say
+        # whether a key exists, and an edit this session overrides it anyway.
+        try:
+            saved_key: str | None = custom.read_key()
+        except ValueError:
+            saved_key = None
 
-        def entered(value: object) -> None:
-            if not isinstance(value, str):
-                return  # cancelled
-            text = value.strip()
-            if not text:
-                return  # left blank -> keep the current port
+        def label(item: str, selected: bool) -> Text:
+            key = (
+                self.model.pending_key
+                if self.model.pending_key is not None
+                else saved_key
+            )
+            values = {
+                "Endpoint": self.model.endpoint or "not set",
+                "Key": "unreadable" if key is None else "set" if key else "none",
+                "Models": f"{len(self.model.custom_models)} selected",
+            }
+            text = Text(f"{item:<10}", style="bold" if selected else "")
+            text.append(values[item], style="dim not bold")
+            return text
+
+        def chosen(item: str) -> None:
+            if item == "Endpoint":
+                self._open_endpoint()
+            elif item == "Key":
+                self._open_key()
+            elif item == "Models":
+                self._open_custom_picker()
+                # Fetch on the way in when there is somewhere to fetch from;
+                # without an endpoint the list says so where `tab` would.
+                if self.model.endpoint:
+                    self._start_custom_discovery()
+            elif item == "help":
+                self._open_help(submenu)
+
+        submenu = PickModal(
+            "Custom models",
+            ["Endpoint", "Key", "Models"],
+            label,
+            on_pick=chosen,
+            width=68,
+            shortcuts={"?": "help"},
+            hint=_hints(("?", "help"), ("enter", "open"), ("esc", "back")),
+        )
+        self._push(submenu, None)
+
+    @staticmethod
+    def _open_help(modal: PickModal) -> None:
+        """``?``: the README section in the browser -- or its address, shown.
+
+        Only a browser that runs *beside* this terminal is asked: without a
+        display, Python's fallback is a console browser opened over the menu.
+        There, and wherever opening fails, the address is the help.
+
+        The launcher inherits this terminal, and what it starts chatters on it
+        later -- "Opening in existing browser session.", a GTK warning --
+        under a frame that has already been repainted. So it is spawned with
+        the terminal's own descriptors pointed at ``/dev/null`` for exactly that
+        moment; a child keeps the descriptors it was given, and the menu gets
+        its own back before it draws again.
+        """
+        import os
+        import webbrowser
+
+        opened = False
+        if (
+            sys.platform != "linux"
+            or os.environ.get("DISPLAY")
+            or os.environ.get("WAYLAND_DISPLAY")
+        ):
+            sys.stdout.flush()
+            sys.stderr.flush()
+            kept = [os.dup(fd) for fd in (1, 2)]
             try:
-                port = int(text)  # the digit filter should already ensure this
-            except ValueError:
-                self.flash = "port must be a number"
-                return
-            if not is_valid_port(port):
-                self.flash = "port must be between 1 and 65535"
-                return
-            model.codex_port = port
+                with open(os.devnull, "wb") as quiet:
+                    for fd in (1, 2):
+                        os.dup2(quiet.fileno(), fd)
+                    try:
+                        opened = webbrowser.open(_CUSTOM_MODELS_HELP, new=2)
+                    except Exception:  # noqa: BLE001 - whatever failed, the address still answers
+                        opened = False
+            finally:
+                for fd, original in zip((1, 2), kept):
+                    os.dup2(original, fd)
+                    os.close(original)
+        modal.error = "" if opened else f"read {_CUSTOM_MODELS_HELP}"
+
+    def _open_endpoint(self) -> None:
+        def entered(value: object) -> None:
+            if isinstance(value, str):
+                self.model.endpoint = custom.endpoint(value)
 
         self._push(
             InputModal(
-                "Gateway port",
-                str(model.codex_port),
-                width=46,
-                max_len=5,
-                digits_only=True,
+                "Endpoint · base before /v1/messages",
+                self.model.endpoint,
+                width=68,
+                max_len=2048,
+                placeholder="http://127.0.0.1:8317",
+                validate=custom.endpoint,
             ),
             entered,
         )
 
-    # -- pick models: sign in (if needed) -> discover -> choose -------------
-    #
-    # Each network step is a worker thread that reports through _worker_result,
-    # exactly like apply/doctor; the busy view shows progress and esc cancels a
-    # slow sign-in. Sign-in and discovery share oauth/models with the CLI, so the
-    # two surfaces behave identically.
-    #
-    # The list is fetched live every time, which is what keeps a remembered pick
-    # honest: a model the current plan no longer offers simply has no row to be
-    # ticked in, so switching accounts reconciles itself instead of leaving a
-    # choice nothing can serve.
-
-    def _open_codex(self, row: PatchRow) -> None:
-        from .codex import oauth
-
-        self._codex_row = row
-        if oauth.load() is None:
-            self._start_codex_auth()
-        else:
-            self._start_codex_discovery()
-
-    def _start_codex_auth(self) -> None:
-        from .codex import oauth
-
-        def show(url: str, code: str) -> None:
-            self.busy_message = f"code {code}   ·   {url}   ·   esc cancels"
-            self._needs_paint = True
-
-        self._cancel.clear()
-        self._start_worker(
-            "codex-auth",
-            "Starting OpenAI sign-in …",
-            lambda: oauth.login(show, cancel=self._cancel.is_set),
-        )
-
-    def _start_codex_discovery(self) -> None:
-        self._start_worker(
-            "codex-discover", "Fetching your Codex models …", self._discover_codex
-        )
-
-    def _discover_codex(self) -> list[CodexModel]:
-        from .codex import oauth
-
-        creds = oauth.load()
-        if creds is None:
-            raise oauth.OAuthError("not signed in")
-        token, creds = oauth.valid_access(creds)
-        return discover(token, creds.account_id, self.model.install.version or "")
-
-    def _open_codex_picker(self, offered: list[CodexModel]) -> None:
-        if not offered:
-            # Nothing to choose from. Opening an empty checklist would let `enter`
-            # confirm `[]` and clear every pick.
-            self.flash = "couldn't fetch models: your plan was unreachable"
+    def _open_key(self) -> None:
+        """One masked field, like the org label: emptied, it means keyless."""
+        try:
+            key = self._endpoint_key()
+        except ValueError as exc:
+            self._push(NoticeModal(str(exc)), None)
             return
-        chosen = {m.id for m in self.model.codex_models}
-        items = [_CodexPick(model=m, on=m.id in chosen) for m in offered]
-        self._push(CheckModal("Codex models", items), self._codex_picked)
 
-    def _codex_picked(self, result: object) -> None:
+        def entered(value: object) -> None:
+            if isinstance(value, str):
+                self.model.pending_key = custom.key_value(value)
+
+        self._push(
+            InputModal(
+                "Key · empty = keyless",
+                key,
+                width=68,
+                max_len=4096,
+                masked=True,
+                validate=custom.key_value,
+            ),
+            entered,
+        )
+
+    def _start_custom_discovery(self) -> None:
+        self._start_worker(
+            "custom-discover",
+            "Fetching endpoint models …",
+            lambda: custom.discover(self.model.endpoint, self._endpoint_key()),
+        )
+
+    def _open_custom_picker(self) -> None:
+        def fetch() -> None:
+            if self.model.endpoint:
+                self._start_custom_discovery()
+            else:
+                picker.error = (
+                    "set an endpoint first; models can still be added by hand"
+                )
+
+        picker = CheckModal(
+            [_ModelPick(model, True) for model in self.model.custom_models],
+            on_details=lambda pick: self._custom_details(picker, pick),
+            on_fetch=fetch,
+            on_add=lambda: self._custom_add(picker),
+        )
+        self._push(picker, self._custom_picked)
+
+    def _custom_check(
+        self, picker: CheckModal, pick: _ModelPick | None, model: CustomModel
+    ) -> None:
+        """Refuse a handle the list or the binary already answers to."""
+        if any(item is not pick and item.model.id == model.id for item in picker.items):
+            raise ValueError(f"Model {model.id!r} is already in the list")
+        others = [item.model for item in picker.items if item.on and item is not pick]
+        validate_models(self.model.pristine.source, [*others, model])
+
+    def _custom_add(self, picker: CheckModal) -> None:
+        """``a``: ask for the id, add the model, then open it like any other.
+
+        The id is the one field a model cannot exist without, so it is the one
+        asked for up front; everything else is edited in the same form an
+        existing model gets. There is no separate "new model" form to cancel
+        out of -- enter on the id adds the row, esc on it adds nothing.
+        """
+
+        def valid(raw: str) -> None:
+            self._custom_check(picker, None, CustomModel(custom.model_id(raw.strip())))
+
+        def entered(raw: object) -> None:
+            if isinstance(raw, str):
+                pick = _ModelPick(CustomModel(custom.model_id(raw.strip())), True)
+                picker.items.append(pick)
+                picker.cursor = len(picker.items) - 1
+                self._custom_details(picker, pick)
+
+        self._push(
+            InputModal("Model ID", "", width=68, max_len=200, validate=valid), entered
+        )
+
+    def _refresh_custom_picker(self, offered: list[CustomModel]) -> None:
+        picker = next(
+            modal for modal, _ in reversed(self.stack) if isinstance(modal, CheckModal)
+        )
+        current = picker.items[picker.cursor].model.id if picker.items else ""
+        claimed = claimed_model_names(self.model.pristine.source)
+        reported = {model.id: model for model in offered if model.id not in claimed}
+        for pick in picker.items:
+            if pick.model.id in reported:
+                pick.model = replace(
+                    pick.model,
+                    context_options=reported[pick.model.id].context_options
+                    or pick.model.context_options,
+                )
+        listed = {pick.model.id for pick in picker.items}
+        picker.items += [
+            _ModelPick(model)
+            for identity, model in reported.items()
+            if identity not in listed
+        ]
+        picker.cursor = next(
+            (i for i, pick in enumerate(picker.items) if pick.model.id == current), 0
+        )
+
+    def _custom_details(self, picker: CheckModal, pick: _ModelPick) -> None:
+        """A model's editable fields; each edit lands on the row as it is made."""
+
+        def label(item: str, selected: bool) -> Text:
+            values = {
+                "Name": pick.model.label or "none",
+                "Alias": pick.model.alias or "none",
+                "Context": f"{pick.model.context:,} tokens"
+                if pick.model.context
+                else "unknown",
+                "Efforts": ", ".join(pick.model.efforts) or "off",
+            }
+            text = Text()
+            text.append(f"{item:<10}", style="bold" if selected else "dim")
+            empty = item == "Alias" and not pick.model.alias
+            text.append(
+                values[item],
+                style="dim italic not bold" if empty else f"{_VALUE} not bold",
+            )
+            return text
+
+        def edit(item: str) -> None:
+            form.error = ""
+            if item == "Context":
+                self._custom_context(pick)
+                return
+            if item == "Efforts":
+                self._custom_efforts(pick)
+                return
+            model = pick.model
+            value = {"Name": model.name, "Alias": model.alias}[item]
+
+            def changed(raw: str) -> CustomModel:
+                if item == "Alias":
+                    return replace(pick.model, alias=custom.model_alias(raw))
+                return replace(pick.model, name=raw.strip())
+
+            def entered(raw: object) -> None:
+                if isinstance(raw, str):
+                    pick.model = changed(raw)
+                    pick.on = True
+                    form.title = pick.model.label
+
+            title = {
+                "Alias": "/model shortcut · empty = none",
+                "Name": "Display name",
+            }[item]
+            self._push(
+                InputModal(
+                    title,
+                    value,
+                    width=68,
+                    max_len=200,
+                    validate=lambda raw: self._custom_check(picker, pick, changed(raw)),
+                ),
+                entered,
+            )
+
+        form = PickModal(
+            pick.model.label,
+            ["Name", "Alias", "Context", "Efforts"],
+            label,
+            on_pick=edit,
+            width=68,
+            hint=_hints(("enter", "edit"), ("esc", "back")),
+            description=Text(f"ID  {pick.model.id}", style="dim"),
+        )
+        self._push(form, None)
+
+    def _custom_efforts(self, pick: _ModelPick) -> None:
+        """The ladder as the binary can bake it, shaped like the context picker.
+
+        Four shapes exist: the ladder cut at each top the registry names
+        (`low,medium,high`, `+xhigh`, `+max`) and *off*. A free field offers
+        more precision than the binary can bake -- `low,high` bakes exactly as
+        `low,medium,high` -- and an empty one is *off*, never a third "unknown"
+        state: on the API path an undeclared model is offered every level, the
+        opposite of not knowing and the one wrong *yes* this patch could bake.
+        Off is where a model that reports nothing starts. A discovered odd list
+        still shows, under `c`, the way an odd context window does.
+        """
+        ladder = [
+            ",".join(custom.EFFORT_LADDER[: top + 1])
+            for top in range(2, len(custom.EFFORT_LADDER))
+        ]
+        choices = [*ladder, "off"]
+        current = ",".join(pick.model.efforts) or "off"
+
+        def enter_custom() -> None:
+            def entered(value: object) -> None:
+                if isinstance(value, str):
+                    pick.model = replace(
+                        pick.model, efforts=custom.effort_levels(value)
+                    )
+                    pick.on = True
+
+            self._push(
+                InputModal(
+                    "Efforts · comma-separated · empty = off",
+                    "" if current == "off" else current,
+                    width=68,
+                    max_len=200,
+                    validate=custom.effort_levels,
+                ),
+                entered,
+            )
+
+        def label(value: str, selected: bool) -> Text:
+            emphasis = "bold" if selected else "not bold"
+            if value == "custom":
+                if current not in choices:
+                    text = Text("Custom", style=emphasis)
+                    text.append(
+                        f" {current.replace(',', ', ')}", style=f"dim {emphasis}"
+                    )
+                    return text
+                return Text("Custom", style="dim italic")
+            if value == "off":
+                text = Text("Off", style=emphasis)
+                text.append("  no effort control", style=f"dim {emphasis}")
+                return text
+            return Text(value.replace(",", " · "), style=emphasis)
+
+        def chosen(value: object) -> None:
+            if value == "custom":
+                enter_custom()
+            elif isinstance(value, str):
+                pick.model = replace(pick.model, efforts=custom.effort_levels(value))
+                pick.on = True
+
+        self._push(
+            PickModal(
+                "Efforts",
+                [*choices, "custom"],
+                label,
+                current=current if current in choices else "custom",
+                shortcuts={"c": "custom"},
+                width=60,
+                hint=_hints(("c", "custom"), ("enter", "select"), ("esc", "cancel")),
+            ),
+            chosen,
+        )
+
+    def _custom_context(self, pick: _ModelPick) -> None:
+        def enter_custom() -> None:
+            def entered(value: object) -> None:
+                if isinstance(value, str):
+                    pick.model = replace(
+                        pick.model, context=custom.context_tokens(value)
+                    )
+                    pick.on = True
+
+            self._push(
+                InputModal(
+                    "Context tokens · 0 = unknown",
+                    str(pick.model.context),
+                    width=68,
+                    max_len=24,
+                    validate=custom.context_tokens,
+                ),
+                entered,
+            )
+
+        windows = pick.model.context_options
+        if len(windows) < 2:
+            enter_custom()
+            return
+
+        def label(value: str, selected: bool) -> Text:
+            emphasis = "bold" if selected else "not bold"
+            if value == "custom":
+                if pick.model.context and pick.model.context not in windows:
+                    text = Text("Custom", style=emphasis)
+                    text.append(f" {pick.model.context:,}", style=f"dim {emphasis}")
+                    return text
+                return Text("Custom", style="dim italic")
+            return Text(f"{int(value):,}", style=emphasis)
+
+        def chosen(value: object) -> None:
+            if value == "custom":
+                enter_custom()
+            elif isinstance(value, str):
+                pick.model = replace(pick.model, context=int(value))
+                pick.on = True
+
+        self._push(
+            PickModal(
+                "Context window",
+                [*(str(value) for value in windows), "custom"],
+                label,
+                current=str(pick.model.context)
+                if pick.model.context in windows
+                else "custom",
+                shortcuts={"c": "custom"},
+                width=60,
+                hint=_hints(("c", "custom"), ("enter", "select"), ("esc", "cancel")),
+            ),
+            chosen,
+        )
+
+    def _custom_picked(self, result: object) -> None:
         if not isinstance(result, list):
-            return  # cancelled -- selection and row untouched
-        # Straight from the picker, so every model carries the name and window the
-        # plan just reported. Nothing is merged in from the previous set: an id is
-        # a model's whole identity, so the ticked rows *are* the answer.
-        models = [pick.model for pick in result]
-        self.model.codex_models = models
-        # A pin to a model just unpicked no longer resolves; revert those agent rows
-        # to keep so the display and the saved selection stay honest (selection()
-        # drops them anyway, but silently -- the row would still lie).
-        offered = {*self.model.models, *(m.id for m in models)}
+            return
+        previous = {model.id for model in self.model.custom_models}
+        self.model.custom_models = custom.models_from(
+            custom.model_values([pick.model for pick in result])
+        )
+        chosen = {model.id for model in self.model.custom_models}
+        offered = {
+            *self.model.models,
+            *custom.model_names(self.model.custom_models),
+        }
         reverted = []
-        for arow in self.model.agent_rows:
-            if arow.choice != _KEEP and arow.choice not in offered:
-                reverted.append(arow.agent.name)
-                arow.choice = _KEEP
-        if self._codex_row is not None:
-            self._codex_row.on = bool(models)
-        if not models:
-            self.flash = "no Codex models chosen"
-        elif reverted:
-            self.flash = f"reset {', '.join(reverted)} to keep (model unpicked)"
+        for row in self.model.agent_rows:
+            if row.choice != _KEEP and row.choice not in offered:
+                row.choice = _KEEP
+                reverted.append(row.agent.name)
+        if self._custom_row is not None:
+            self._custom_row.on = bool(chosen) and (
+                self._custom_row.on or bool(chosen - previous)
+            )
+        if reverted:
+            self.flash = (
+                "reset " + ", ".join(reverted) + " to keep (model or alias removed)"
+            )
 
     def _confirm_restore(self) -> None:
         def answered(restore: object) -> None:
@@ -1024,44 +1410,45 @@ class MenuApp:
                     self._exit = 0
 
             self._push(
-                ConfirmModal("Quit without saving your changes?", "quit", tone=_WARN),
+                ConfirmModal("Discard unsaved changes?", "discard", tone=_WARN),
                 answered,
             )
             return
         self._exit = self.exit_code if self.view in ("report", "doctor") else 0
 
     def _unsaved(self) -> bool:
-        """Does the current selection differ from what the binary carries?
-
-        Answered by building the manifest this selection *would* write and
-        comparing it to the one the binary has. The manifest is already the single
-        description of a patched bundle's shape, so listing the fields again here
-        would be a second copy of it, free to fall behind -- which is exactly what
-        happened: the gateway port and the imported model set could both change
-        with the menu still reporting no change, and quitting asked nothing.
-
-        Two keys are excluded because they are not edits the user made: ``tool``
-        (a patch-cc upgrade) and ``v``. The patch list is compared through
-        :meth:`MenuModel.applied_ids`, so a retired id in an older manifest cannot
-        read as a change nobody can save away.
-        """
-        manifest = self.model.status.manifest
-        sel = self.model.selection()
-        if not manifest:
-            return bool(sel.patches)
-        would = patcher.manifest_payload(sorted(sel.patches), sel.options)
-        carried = {**manifest, "patches": sorted(self.model.applied_ids())}
-        return any(
-            would.get(key) != carried.get(key)
-            for key in (would.keys() | carried.keys()) - {"v", "tool"}
-        )
+        if (
+            self.model.pending_key is not None
+            and self.model.pending_key != custom.read_key()
+        ):
+            return True
+        return self.model.selection().payload() != self._initial
 
     # ---------------------------------------------------- actions
 
     def _start_apply(self) -> None:
+        # A row that is on with nothing chosen is dropped by `Selection.active`,
+        # like subagent-models. What cannot be dropped is a chosen set with no
+        # endpoint, or a saved id that this (newer) binary now claims for itself
+        # -- the patch would refuse either, so it is said here, in the submenu
+        # that fixes it, rather than as a broken patch on the report.
+        row = self.model.patch_rows["custom-models"]
+        if row.on and self.model.custom_models:
+            try:
+                validate_models(self.model.pristine.source, self.model.custom_models)
+                problem = (
+                    "" if self.model.endpoint else "Custom models needs an endpoint"
+                )
+            except ValueError as exc:
+                problem = str(exc)
+            if problem:
+                self.flash = problem
+                self._open_custom_menu(row)
+                return
         selection = self.model.selection()
-        if not selection.patches:
-            self.flash = "nothing selected — toggle at least one patch"
+        count = len(selection.active().patches)
+        if not count:
+            self._confirm_restore()
             return
 
         def confirmed(save: object) -> None:
@@ -1073,46 +1460,40 @@ class MenuApp:
                 lambda: self._apply(selection),
             )
 
-        count = len(selection.patches)
         self._push(
             ConfirmModal(
-                f"Patch Claude {self.model.install.version or '?'} "
-                f"with {count} patch{'es' if count != 1 else ''}?",
-                "save",
+                f"Apply {count} patch{'es' if count != 1 else ''} to Claude {self.model.install.version or '?'}?",
+                "apply",
             ),
             confirmed,
         )
 
     def _apply(
         self, selection: cache.Selection
-    ) -> tuple[patcher.PatchReport, Status | None]:
-        options = selection.options
-        if options.codex_models:
-            # Fill in each model's name and window right before baking. A pick
-            # seeded from the manifest or the cache carries an id and nothing else,
-            # and a model baked without its real window makes Claude Code
-            # auto-compact early -- so the plan is asked here, off-loop, where the
-            # busy view is already up and a slow answer costs no frame.
-            #
-            # Refreshing only ever *adds* what the plan knows: a model it no longer
-            # offers keeps its fallbacks instead of being dropped behind your back.
-            # Dropping belongs to the picker, which lists the plan live, so a model
-            # that has gone simply has no row left to tick -- visible, and undoable.
-            options.codex_models, _ = reconcile(
-                options.codex_models, self.model.install.version or ""
-            )
+    ) -> tuple[patcher.PatchReport, Status | None, str]:
+        active = selection.active()
         report = patcher.patch_installation(
             self.model.install,
-            selection.patches,
-            selection.options,
+            active.patches,
+            active.options,
             bundle=self.model.pristine,
         )
-        status = None
+        status, note = None, ""
         if report.output is not None:
             # Remembered once it is really in the binary, never before -- the
             # same rule `apply` follows. Saving on the way in would have a run
-            # that then failed still rewrite what `--from-cache` replays.
-            cache.save(selection)
+            # that then failed still rewrite what the next `apply` bakes.
+            # And a memory that cannot be written is a note on the report, never
+            # the result in its place: the binary is patched either way, and
+            # the header keeps saying "unsaved", which is now simply true.
+            try:
+                cache.save(selection)
+                self._initial = selection.payload()
+                if self.model.pending_key is not None:
+                    custom.save_key(self.model.pending_key)
+                    self.model.pending_key = None
+            except OSError as exc:
+                note = f"selection not remembered: {exc}"
             # The binary just changed; recompute the header state off-loop. A
             # failure here costs only the refreshed header, not the apply that
             # already succeeded, so it stays a local miss rather than a result.
@@ -1122,7 +1503,7 @@ class MenuApp:
                 status = doctor.status(container.read(str(self.model.install.binary)))
             except (BunError, OSError):
                 status = None
-        return report, status
+        return report, status, note
 
     def _start_doctor(self) -> None:
         from . import doctor
@@ -1159,11 +1540,8 @@ class MenuApp:
     def _start_worker(self, kind: str, message: str, work: Callable[[], Any]) -> None:
         """Show ``message``, run ``work`` off-loop, and post its result exactly once.
 
-        Failing is a result too. A worker that dies without posting leaves the
-        busy view spinning forever -- nothing else polls it, and ``esc`` there
-        only sets ``_cancel`` -- so the one thing every worker must not do is
-        raise. Owning that here is what lets each of them below be the plain
-        call it is, and makes the guarantee true for the next one by default.
+        Failing is a result too. Every worker posts its outcome so the busy
+        view always returns control, including when discovery fails.
         """
         self._busy(message)
 
@@ -1182,14 +1560,24 @@ class MenuApp:
         self._worker_result = None
         self._needs_paint = True
         kind, payload, error = result
+        if error is not None:
+            self.view = "select"
+            self.flash = error
+            if kind in ("apply", "doctor"):
+                self.exit_code = 1
+            if kind == "custom-discover":
+                self.flash = ""
+                self._push(
+                    NoticeModal(
+                        "Could not fetch models. Saved models are still editable.\n\n"
+                        + error
+                    ),
+                    None,
+                )
+            return
 
         if kind == "apply":
-            if error is not None:
-                self.exit_code = 1
-                self.flash = error
-                self.view = "select"
-                return
-            report, status = payload
+            report, status, self.report_note = payload
             self.report = report
             self.exit_code = 0 if report.ok else 1
             if status is not None:
@@ -1198,33 +1586,16 @@ class MenuApp:
         elif kind == "doctor":
             self.doctor_result = payload
             # `clean`, not `broken`: a partially-drifted patch or a bundle that
-            # will not parse is not green, and reading `broken` alone here is how
-            # the menu once exited 0 where the CLI exited 1 on the same build.
+            # will not parse is not green, and reading `broken` alone here would
+            # exit 0 where the CLI exits 1 on the same build.
             self.exit_code = 0 if payload.clean else 1
             self.view = "doctor"
         elif kind == "restore":
-            if error is not None:
-                self.flash = error
-                self.view = "select"
-                return
             self.exit_message = "Restored the original binary. Restart Claude Code."
             self._exit = 0
-        elif kind == "codex-auth":
+        elif kind == "custom-discover":
             self.view = "select"
-            if error is not None:
-                self.flash = (
-                    "sign-in cancelled"
-                    if "cancel" in error.lower()
-                    else f"sign-in failed: {error}"
-                )
-                return
-            self._start_codex_discovery()  # signed in -> straight to discovery
-        elif kind == "codex-discover":
-            self.view = "select"
-            if error is not None:
-                self.flash = f"couldn't fetch models: {error}"
-                return
-            self._open_codex_picker(payload)
+            self._refresh_custom_picker(payload)
 
     # ---------------------------------------------------- movement
 
@@ -1335,7 +1706,27 @@ class MenuApp:
         modal = self.stack[-1][0]
         modal_width = min(modal.width, width - 4)
         options = self.console.options.update_width(modal_width)
-        modal_lines = self.console.render_lines(modal.render(), options, pad=True)
+        if isinstance(modal, (PickModal, CheckModal)):
+            modal.page_size = (
+                min(10, len(modal.items))
+                if isinstance(modal, CheckModal)
+                else len(modal.items)
+            )
+
+        def render() -> list[list[Segment]]:
+            panel = modal.render(modal_width, height)
+            if self.view == "busy":
+                panel.title = Text(self.busy_message, style=f"bold {_ACCENT}")
+            return self.console.render_lines(panel, options, pad=True)
+
+        modal_lines = render()
+        while (
+            isinstance(modal, (PickModal, CheckModal))
+            and len(modal_lines) > height
+            and modal.page_size > 1
+        ):
+            modal.page_size = max(1, modal.page_size - (len(modal_lines) - height))
+            modal_lines = render()
         x0 = (width - modal_width) // 2
         y0 = max(0, (height - len(modal_lines)) // 2)
         for i, modal_line in enumerate(modal_lines):
@@ -1367,11 +1758,19 @@ class MenuApp:
             line.append("patched", style="green")
             if applied:
                 line.append(f" ({applied})", style="dim")
-            if self.view == "select" and self._unsaved():
-                line.append("  ·  ", style="dim")
-                line.append("unsaved", style=_WARN)
         else:
             line.append("not patched", style=_WARN)
+        if self.view == "select":
+            note = (
+                "unsaved"
+                if self._unsaved()
+                else "pending apply"
+                if cache.pending(self.model.selection(), model.status.manifest)
+                else ""
+            )
+            if note:
+                line.append("  ·  ", style="dim")
+                line.append(note, style=_WARN)
         return line
 
     def _foot(self, panel_width: int) -> list[Text]:
@@ -1379,20 +1778,20 @@ class MenuApp:
         if self.view == "select":
             # Wrapped, not truncated. The longest thing that lands here is the
             # "already patched and no pristine backup exists" refusal, whose
-            # whole value is the sentence naming the way out -- and one centred
-            # line cut at the panel edge threw exactly that half away.
+            # whole value is the sentence naming the way out -- which one centred
+            # line cut at the panel edge would throw away.
             lines += _center_block(textwrap.wrap(self.flash, panel_width), panel_width)
             rows = self.model.rows()
             row = rows[self.cursor] if self.cursor < len(rows) else None
             if isinstance(row, PatchRow) and row.patch.id in _CONFIGURABLE:
-                context = _hints(("enter", "configure"), ("space", "toggle"))
+                context = _hints(("space", "toggle"), ("enter", "configure"))
             else:
                 context = _hints(("enter", "toggle"))
             lines.append(_center(context, panel_width))
             lines.append(
                 _center(
                     _hints(
-                        ("s", "save"), ("d", "doctor"), ("r", "restore"), ("q", "quit")
+                        ("s", "apply"), ("d", "doctor"), ("r", "restore"), ("q", "quit")
                     ),
                     panel_width,
                 )
@@ -1426,10 +1825,7 @@ class MenuApp:
                 cursor_line = len(lines)
             line = Text()
             line.append("❯ " if current else "  ", style=_ACCENT)
-            if row.absent is not None:
-                mark, mark_style = ("–", "dim")
-            else:
-                mark, mark_style = ("●", _ACCENT) if row.on else ("○", f"dim {_ACCENT}")
+            mark, mark_style = ("●", _ACCENT) if row.on else ("○", f"dim {_ACCENT}")
             line.append(f"{mark} ", style=mark_style)
             line.append(
                 row.patch.title, style="bold" if current else ("" if row.on else "dim")
@@ -1447,10 +1843,6 @@ class MenuApp:
 
     def _row_note(self, row: PatchRow) -> Text | None:
         """The current configuration, shown on the row itself when enabled."""
-        if row.absent is not None:
-            # The whole sentence waits in `flash` for a key press; the row says
-            # only that there is nothing here to turn on.
-            return Text("not on this build", style="dim")
         if not row.on:
             return None
         model = self.model
@@ -1466,12 +1858,12 @@ class MenuApp:
         if row.patch.id == "org-label":
             value = model.text_rows["org"].value
             return Text(value, style=_VALUE) if value else Text("hidden", style="dim")
-        if row.patch.id == "codex-models":
-            count = len(model.codex_models)
+        if row.patch.id == "custom-models":
+            count = len(model.custom_models)
             if not count:
                 return Text("none chosen", style="dim")
             note = Text(f"{count} model{'s' if count != 1 else ''}", style=_VALUE)
-            note.append(f"  ·  :{model.codex_port}", style="dim")
+            note.append(f"  ·  {model.endpoint or 'no endpoint'}", style="dim")
             return note
         return None
 
@@ -1491,7 +1883,7 @@ class MenuApp:
         report = self.report
         if report is None:
             return lines, None
-        options = self.model.selection().options
+        options = self.model.selection().active().options
         for patch, outcome in report.results:
             mark, style = MARKS[outcome.health]
             line = Text()
@@ -1522,24 +1914,29 @@ class MenuApp:
             grown = (report.patched_size - report.original_size) / 1e6
             line = Text()
             line.append("  ✓ ", style="green")
-            line.append(f"Saved to {report.output.name}", style="bold")
+            line.append(f"Applied to {report.output.name}", style="bold")
             line.append(
                 f"  ·  {report.patched_size / 1e6:.0f} MB ({grown:+.0f} MB)",
                 style="dim",
             )
             lines.append(line)
             lines.append(Text("    Restart Claude Code to see it.", style="dim"))
-            if "codex-models" in report.landed_ids:
-                # The binary now routes Codex models to this port; the run that
+            if "custom-models" in report.landed_ids:
+                # The binary now routes custom models to this endpoint; the run that
                 # made that true is the only one that knows to say so.
-                style, note = gateway_note(options.codex_port)
-                lines.append(Text(f"    gateway  {note}", style=style))
-            lines.append(
-                Text(
-                    "    Reapply this selection anytime:  patch-cc apply --from-cache",
-                    style="dim",
+                style, note = endpoint_note(options.endpoint)
+                lines.append(Text(f"    endpoint  {note}", style=style))
+            # The replay hint is a promise the cache keeps; when it could not
+            # be written, the line that says so takes the promise's place.
+            if self.report_note:
+                lines.append(Text(f"    ! {self.report_note}", style=_WARN))
+            else:
+                lines.append(
+                    Text(
+                        "    After a Claude update, this is all you need:  patch-cc apply",
+                        style="dim",
+                    )
                 )
-            )
         return lines, None
 
     def _body_doctor(self, panel_width: int) -> tuple[list[Text], int | None]:
@@ -1606,8 +2003,10 @@ def _center_block(lines: list[str], width: int, style: str = _WARN) -> list[Text
 
 def run_menu() -> int:
     if not (sys.stdout.isatty() and sys.stdin.isatty()):
-        err("The interactive menu needs a terminal; use the subcommands instead.")
-        console.print("  [dim]patch-cc apply --help[/dim]")
+        err("The interactive menu needs a terminal.")
+        console.print(
+            "  [dim]patch-cc apply bakes the saved selection without one[/dim]"
+        )
         return 2
 
     install = locate.find()
@@ -1619,11 +2018,7 @@ def run_menu() -> int:
         return 1
 
     try:
-        installed = container.read(str(install.binary))
-        # Before the first apply there is no backup, and the installed binary
-        # *is* the pristine source -- handing it over keeps a first run from
-        # reading the same 275 MB file twice.
-        pristine = patcher.read_pristine(install, installed=installed)
+        installed, pristine = patcher.read_installation(install)
     except BunError as exc:
         err(str(exc))
         return 1
@@ -1632,8 +2027,7 @@ def run_menu() -> int:
 
     status = doctor.status(installed)
 
-    model = MenuModel.build(install, status, pristine)
-    app = MenuApp(model)
+    app = MenuApp(MenuModel.build(install, status, pristine))
     code = app.run()
     if app.exit_message:
         console.print(app.exit_message)

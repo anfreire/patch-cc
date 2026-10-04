@@ -5,9 +5,8 @@ The measured claims in [PLAYBOOK.md](../docs/PLAYBOOK.md) are statements about a
 set of real Claude binaries ([corpus.md](../docs/corpus.md)). That set accretes
 on its own -- every first patch of a version leaves a ``<version>.orig`` -- which
 means it is sampled by how often this machine happened to update, never by what
-Anthropic actually published. Five builds -- 2.1.258-2.1.261 and 2.1.265 -- were
-missing here for exactly that reason, and they span the window the last two
-live-thinking repairs were made blind to.
+Anthropic actually published, and a build that ships while the machine sits
+idle is a hole the set cannot see from inside.
 
 So the corpus is completed the way everything else here is decided: off the
 artifact. Anthropic still serves every build it published -- 2.1.210 included --

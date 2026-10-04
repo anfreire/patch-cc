@@ -16,7 +16,7 @@ license-files = ["LICENSE"]
 authors = [
     { name = "André Freire Ferreira", email = "anfreire.dev@gmail.com" },
 ]
-keywords = ["claude", "claude-code", "codex", "openai", "gpt", "patch", "bun", "cli", "tui"]
+keywords = ["claude", "claude-code", "models", "proxy", "patch", "bun", "cli", "tui"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",

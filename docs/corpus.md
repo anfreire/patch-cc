@@ -1,8 +1,8 @@
 # The corpus
 
 The measured claims in [PLAYBOOK.md](PLAYBOOK.md) — "every build in the corpus",
-a counter that "moved 7 → 9", a matcher that "hit zero on all of them" — are
-statements about a set of real Claude binaries. This file is that set, so a
+"the same single site on every build", "thirty-four builds carry the surface" —
+are statements about a set of real Claude binaries. This file is that set, so a
 claim is one command from re-verification instead of a number you have to trust.
 
 ## What it is

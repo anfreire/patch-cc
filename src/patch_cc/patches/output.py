@@ -28,10 +28,10 @@ def _tool_call_verbose(source: Source, _options: Options, outcome: Outcome) -> S
 
     The arm is the dispatch label; the row is whatever inside it is *handed* a
     ``verbose`` prop. Which render function receives it, whether the arm is an
-    expression or a block, and what else it is handed all belonged to the two
-    matchers this replaced -- one for the ``return``-form arm and one for the
-    block form, the second carrying six neighbouring prop names purely to
-    prove it had found the right call. The label proves that.
+    expression or a block, and what else it is handed are all the minifier's
+    to spell -- a matcher per arm form, carrying neighbouring prop names to
+    prove it has found the right call, dates itself to one build. The label
+    proves that.
 
     Handed, not taken apart. A prop being passed is an object literal; the same
     name in a destructuring pattern is a local being bound, and writing ``!0``
@@ -242,7 +242,6 @@ PATCHES = [
     Patch(
         id="tool-calls",
         title="Detailed tool calls",
-        summary="Show full read/search tool calls instead of collapsed one-line summaries.",
         group=GROUP_OUTPUT,
         fn=_tool_call_verbose,
         anchors=(_COLLAPSED,),
@@ -250,7 +249,6 @@ PATCHES = [
     Patch(
         id="create-diff",
         title="Colour new files as diffs",
-        summary="Render created files through the diff view so added lines keep + and green.",
         group=GROUP_OUTPUT,
         fn=_create_diff_colors,
         anchors=(_CREATE, _UPDATE, "structuredPatch:"),

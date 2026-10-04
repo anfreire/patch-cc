@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import socket
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from rich.console import Console
 
+from .custom_models import loopback
 from .patches.base import Options, Outcome, Patch
 
 if TYPE_CHECKING:
     from .doctor import DryRun, Smoke
 
 console = Console()
+#: Warnings and errors go to stderr, so a piped `doctor` or `apply` keeps its
+#: report clean and a script can tell the two apart.
+_stderr = Console(stderr=True)
 
 #: Glyph and colour per :attr:`Outcome.health`, so the CLI and the menu render
 #: the same verdict identically.
@@ -21,10 +27,9 @@ MARKS = {"ok": ("✓", "green"), "partial": ("~", "yellow"), "broken": ("✗", "
 def findings(outcome: Outcome) -> list[tuple[str, str]]:
     """Every line worth showing under a patch line, as ``(style, text)``.
 
-    One source for *what* gets said; each surface decides only how to draw it.
-    The CLI and the menu built this separately and had already drifted -- the
-    menu showed neither the exception that broke a patch nor any note, which is
-    where an early warning goes to die.
+    One source for *what* gets said; each surface decides only how to draw it,
+    so neither can drop the exception that broke a patch or a note the other
+    shows -- which is where an early warning goes to die.
 
     Notes always appear, green runs included: a warning withheld until
     something breaks can only ever arrive late. Absences are the noisy half
@@ -95,8 +100,8 @@ def verdicts(result: DryRun, smoke: Smoke | None = None) -> list[tuple[str, str]
         lines.append(("green", matched + tail))
     if smoke is not None and not smoke.ok:
         # After the matcher verdict on purpose: matching and running are
-        # different truths, and 2.1.246 is the build where they split -- every
-        # matcher green, the written container dead on launch.
+        # different truths, and from 2.1.246 (Bun 1.4.1) a written container
+        # can be dead on launch with every matcher green.
         lines.append(
             (
                 "yellow",
@@ -110,7 +115,7 @@ def verdicts(result: DryRun, smoke: Smoke | None = None) -> list[tuple[str, str]
 def applied_value(patch: Patch, outcome: Outcome, options: Options) -> str | None:
     """The value a configurable patch actually wrote, for the report line.
 
-    Branding, the version marker, model overrides, and the chosen Codex models
+    Branding, the version marker, model overrides, and the chosen custom models
     each carry a chosen value; a plain toggle patch carries none. One source so
     the CLI and the menu report the same thing after an apply.
 
@@ -118,8 +123,8 @@ def applied_value(patch: Patch, outcome: Outcome, options: Options) -> str | Non
     from the binary (the patcher re-runs without it) yet keeps its outcome in
     the report, so echoing its value would assert a feature the bundle does not
     carry -- the very "did it bake?" signal this line exists to keep honest.
-    (``health`` is ``broken`` whenever nothing landed too, so this subsumes the
-    old "applied something" guard.)
+    (``health`` is ``broken`` whenever nothing landed too, so no separate
+    "applied something" test is needed.)
     """
     if outcome.health == "broken":
         return None
@@ -131,37 +136,30 @@ def applied_value(patch: Patch, outcome: Outcome, options: Options) -> str | Non
         return options.org_label or "hidden"
     if patch.id == "subagent-models" and options.subagent_models:
         return ", ".join(f"{a}={m}" for a, m in options.subagent_models.items())
-    if patch.id == "codex-models" and options.codex_models:
+    if patch.id == "custom-models" and options.custom_models:
         # The models + port that actually landed -- the visible confirmation that
-        # codex-models baked (a dropped/no-op patch returned above), and the one
+        # custom-models baked (a dropped/no-op patch returned above), and the one
         # place a model dropped for not being offered any more shows as absent.
-        ids = ", ".join(m.id for m in options.codex_models)
-        return f"{ids}  ·  :{options.codex_port}"
+        ids = ", ".join(m.id for m in options.custom_models)
+        return f"{ids}  ·  {options.endpoint}"
     return None
 
 
-def gateway_note(port: int) -> tuple[str, str]:
-    """Where Codex requests go, and whether anything is there to take them.
-
-    A patched binary routes to this port whether or not the gateway is up, so
-    every surface that bakes or reports the redirect owes this answer --
-    forgetting ``codex serve`` is the likeliest way the bridge "doesn't work",
-    and a URL that leads nowhere reads exactly like one that works. Left
-    unanswered it costs minutes of silence and then a connection error naming no
-    cause, at which point the user is debugging Claude Code instead of starting a
-    server. One home, so the apply report, ``status`` and ``codex status`` cannot
-    word it three ways -- the CLI and the menu each worded findings once, and
-    they had already drifted.
-    """
-    # Imported here so the server (and its http/threading machinery) stays out of
-    # every patch-cc invocation that never asks about the gateway.
-    from .codex.gateway import running
-
-    # Spaced to fit the menu's 72-column panel at a five-digit port, so the half
-    # that says what to do cannot be the half an ellipsis eats.
-    if running(port):
-        return "green", f"http://127.0.0.1:{port} · running"
-    return "yellow", f"http://127.0.0.1:{port} · not running (patch-cc codex serve)"
+def endpoint_note(url: str) -> tuple[str, str]:
+    """A loopback TCP probe is only a listening check, never an API health claim."""
+    parsed = urlsplit(url)
+    host = parsed.hostname or ""
+    if not loopback(host):
+        return "dim", url
+    try:
+        with socket.create_connection(
+            (host, parsed.port or (443 if parsed.scheme == "https" else 80)),
+            timeout=0.25,
+        ):
+            pass
+    except OSError:
+        return "yellow", f"{url} · nothing listening — start your proxy"
+    return "green", f"{url} · listening"
 
 
 def heading(text: str) -> None:
@@ -173,8 +171,8 @@ def ok(text: str) -> None:
 
 
 def warn(text: str) -> None:
-    console.print(f"[yellow]![/yellow] {text}")
+    _stderr.print(f"[yellow]![/yellow] {text}")
 
 
 def err(text: str) -> None:
-    console.print(f"[red]✗[/red] {text}")
+    _stderr.print(f"[red]✗[/red] {text}")

@@ -6,8 +6,8 @@ Two different questions, deliberately kept apart:
   manifest comment every patched bundle ends with.
 * **dryrun** -- would our patches still apply to *this* bundle? Answered by
   running every patch and reporting per-step hits, so a silently drifted
-  matcher shows up as a concrete "reducer.message_stop missed" instead of a
-  lump count.
+  matcher shows up as a concrete "required step thinking-stop found nothing"
+  instead of a lump count.
 
 The dry run feeds every configurable patch a synthetic configuration built
 from the bundle's own discovered agents and models, so branding and the model
@@ -25,8 +25,7 @@ from dataclasses import dataclass, field
 from . import js
 from .bun import Bundle, container
 from .bun.errors import BunError
-from .codex import EFFORT_LADDER
-from .codex.models import CodexModel
+from .custom_models import CustomModel
 from .patcher import build_manifest, landed_ids, read_manifest
 from .patches import ALL_PATCHES, Options, Outcome, Patch
 from .patches.agents import INHERIT, BuiltinAgent, discover_agents, discover_models
@@ -34,9 +33,6 @@ from .patches.agents import INHERIT, BuiltinAgent, discover_agents, discover_mod
 
 @dataclass(slots=True)
 class Status:
-    #: The bytecode the module table names: every module's on a pristine
-    #: binary, the untouched modules' on a patched one (docs/INTERNALS.md).
-    bytecode_size: int
     #: Parsed manifest for binaries patched by this tool; ``None`` when the
     #: binary is pristine.
     manifest: dict | None
@@ -58,10 +54,7 @@ class Status:
 
 
 def status(bundle: Bundle) -> Status:
-    return Status(
-        bytecode_size=bundle.bytecode_size,
-        manifest=read_manifest(bundle.source),
-    )
+    return Status(manifest=read_manifest(bundle.source))
 
 
 @dataclass(slots=True)
@@ -96,10 +89,9 @@ class DryRun:
     def broken(self) -> list[Patch]:
         """Patches that failed, by :attr:`Outcome.health` and nothing else.
 
-        A second opinion on health here is how ``doctor`` once printed a red
-        cross and "all patches still match" in the same report: it judged on
-        counts alone, so a patch that raised half-way was red on its own line
-        and absent from this list.
+        A second opinion on health here is how a red cross and "all patches
+        still match" end up in the same report: judged on counts alone, a patch
+        that raised half-way is red on its own line and absent from this list.
 
         Kept apart from :attr:`unhealthy` because only these have an anchor
         count worth printing: a patch that found its shape and failed to rewrite
@@ -116,8 +108,8 @@ class DryRun:
         pristine backup when the install is patched), so the reading that makes
         a missed sub-step benign is unavailable here and what is left is a
         matcher to repair. Ending green over one is the same silence ``expect``
-        exists to break -- the per-patch line said ``~`` while the closing
-        sentence said every patch still matched.
+        exists to break -- the per-patch line would say ``~`` while the closing
+        sentence says every patch still matches.
 
         ``apply`` judges the same outcome differently on purpose
         (:attr:`patch_cc.patcher.PatchReport.regressions` reads ``broken``
@@ -132,33 +124,31 @@ class DryRun:
         """The one green verdict: every patch fully ``ok`` *and* the bundle parses.
 
         The single home for the dry-run exit code, so no surface can disagree
-        about it. The menu once read :attr:`broken` alone where the CLI read
-        :attr:`unhealthy` (partial included) and :attr:`defect` together, so a
-        partially-drifted or unparseable build showed thirteen green ticks and
-        exit 0 in the menu and red in the CLI.
+        about it. Read in two places -- :attr:`broken` alone on one, :attr:`unhealthy`
+        (partial included) and :attr:`defect` on the other -- a partially-drifted
+        or unparseable build would show green ticks and exit 0 on one surface
+        and red on the other.
         """
         return not self.unhealthy and self.defect is None
 
 
 def _synthetic_options(agents: list[BuiltinAgent], models: list[str]) -> Options:
-    """A configuration that forces every configurable patch to do work.
+    """Exercise every configurable patch using values derived from the bundle.
 
-    Each discovered agent is assigned a model different from its current one, so
-    the rewrite (not the already-desired no-op) is what gets tested. Targets come
-    from the bundle's own aliases: they are what a user without a Codex plan
-    picks, so they are what the common path must keep working. The dry run
-    composes the patches, so pinning an agent to the synthetic Codex id below
-    would also be honest now -- `codex-models` runs first and registers it --
-    but the aliases exercise the same rewrite without making the model
-    overrides depend on the Codex patch landing.
+    A synthetic external model exercises registration, shortcuts, context,
+    effort limits (it lacks `max`) and routing without a network read. Subagent
+    targets remain native aliases so their matcher health can be compared
+    independently.
     """
-    # Codex models are chosen by the user and described by their plan, neither of
-    # which a dry run has, so it supplies a synthetic one -- with a context window
-    # (so the context step is exercised), a `gpt-<ver>-<family>` id (so a family
-    # shortcut is derived, exercising the general-resolver step too), and the full
-    # effort ladder (so the registry step bakes every capability string) -- to
-    # hold every one of codex-models' anchors in the net like the other patches.
-    codex = [CodexModel("gpt-9.9-doctor", "Doctor", 272_000, efforts=EFFORT_LADDER)]
+    custom = [
+        CustomModel(
+            "doctor-9.9",
+            "Doctor",
+            272_000,
+            efforts=("low", "medium", "high", "xhigh"),
+            alias="doctor",
+        )
+    ]
     overrides = {
         agent.name: target
         for agent in agents
@@ -167,7 +157,8 @@ def _synthetic_options(agents: list[BuiltinAgent], models: list[str]) -> Options
     return Options(
         brand="patch-cc doctor",
         subagent_models=overrides,
-        codex_models=codex,
+        custom_models=custom,
+        endpoint="http://127.0.0.1:8317",
         # The replace branch; the hidden form differs only in the emitted tail,
         # so one configuration holds the whole matcher in the net.
         org_label="patch-cc doctor",
@@ -179,13 +170,12 @@ def dryrun(bundle: Bundle) -> DryRun:
 
     The patches are *composed*, exactly as one pass of ``apply``'s fixpoint
     composes them, and the result is parsed. Running each patch against the
-    pristine source and discarding its output was cheaper and answered a
-    question nobody asks: it could not see `codex-models` registering the ids
+    pristine source and discarding its output would be cheaper and answer a
+    question nobody asks: it cannot see `custom-models` registering the ids
     that `subagent-models` then pins -- the one ordering the playbook calls
-    load-bearing -- and it could not see the bundle at all, only counters. The
-    bug that motivated the parse was invisible twice over: the patch reported
-    ``candidates=2 applied=2``, and the string it had corrupted was thrown away
-    on the next line.
+    load-bearing -- and it cannot see the bundle at all, only counters, so a
+    patch that corrupts a string reports ``candidates=2 applied=2`` and the
+    rubble is thrown away on the next line.
 
     Anchor counts and the parse both stay measured against the *pristine*
     source. They answer "what did this build ship", which is a question about
@@ -229,14 +219,14 @@ def smoke(bundle: Bundle, dry: DryRun, timeout: float = 60.0) -> Smoke:
 
     The matchers prove the patches still *find* their shapes; this proves the
     written container still *carries* them -- rebuilt, spliced back into the
-    executable, loaded by Bun and run. Those are different checks: on 2.1.246
-    every module round-tripped byte-perfect while the written binary segfaulted
-    at launch, because what the rewrite lost -- the record chain and the shared
-    bytecode string table -- lives in bytes no module owns and no per-module
-    comparison can miss loudly. ``--version`` is the cheapest run that loads the
-    whole graph, and with ``version-marker`` landed its suffix line is our own
-    edit's output, so the check proves the patched code executes rather than
-    merely boots around it.
+    executable, loaded by Bun and run. Those are different checks: from 2.1.246
+    (Bun 1.4.1) the record chain and the shared bytecode string table live in
+    bytes no module owns, so a write that loses them round-trips every module
+    byte-perfect and segfaults at launch, and no per-module comparison can miss
+    loudly there. ``--version`` is the cheapest run that loads the whole graph,
+    and with ``version-marker`` landed its suffix line is our own edit's
+    output, so the check proves the patched code executes rather than merely
+    boots around it.
 
     The bake goes through :func:`patch_cc.bun.container.write` -- the same
     staging, verification and (on macOS) codesign as a real apply -- into a

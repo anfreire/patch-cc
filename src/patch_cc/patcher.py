@@ -16,7 +16,7 @@ from .patches import ALL_PATCHES, Options, Outcome, Patch
 
 #: Every patched bundle ends with one comment line recording exactly what was
 #: applied. Comments cannot collide with code, survive re-extraction, and make
-#: ``status`` a parse instead of a guess -- value-flip patches leave no other
+#: the applied state a parse instead of a guess -- value-flip patches leave no other
 #: fingerprint.
 MANIFEST_PREFIX = "//patch-cc "
 
@@ -35,7 +35,7 @@ def landed_ids(results: list[tuple[Patch, Outcome]]) -> list[str]:
     """Exactly what the manifest may claim: every patch that is not broken.
 
     A patch that rewrote something but missed an expectation is not an applied
-    patch; recording it would make ``status`` assert a feature that is not
+    patch; recording it would make the manifest assert a feature that is not
     there. One home for the rule: ``apply``'s report and doctor's smoke bake
     both build their manifests from it, so they cannot drift on what "landed"
     means.
@@ -83,30 +83,30 @@ def manifest_payload(landed: list[str], options: Options) -> dict:
 
     Each configurable value belongs to a patch, so it is recorded only when
     that patch landed. Writing the brand while `branding` was dropped for
-    drifting would have `status` assert a name the bundle does not contain,
+    drifting would have the manifest assert a name the bundle does not contain,
     and re-applying from that manifest would keep asserting it.
 
     Kept apart from its serialisation because this *is* the description of a
     patched bundle's shape, and one other question is asked of it: the menu's
     "does my selection differ from the binary?" compares the payload this would
     write against the one the binary carries, rather than re-listing the fields
-    by hand. A second, hand-written list of what counts is how the gateway port
-    and the imported model set came to change with the menu reporting no change.
+    by hand. A second, hand-written list of what counts would let a field -- the
+    endpoint URL, the model set -- change with the menu reporting no change.
     """
     applied = set(landed)
     payload: dict = {"v": 1, "tool": __version__, "patches": landed}
-    # Each configurable patch declares its own manifest key and how to fill it
+    # Each configurable patch declares its own key and how to fill it
     # (`Patch.setting`), so this records what is *in the binary* without a chain
     # of `patch.id ==` here that could drift from the cache's spelling. A value
     # is recorded only when its patch landed *and* there is one worth recording
     # (`recorded`): a brand at the default, or no override, leaves no key -- so
-    # `status` can never assert a name the bundle does not carry. `org-label`'s
+    # the manifest can never assert a name the bundle does not carry. `org-label`'s
     # `recorded` is always true, because an empty org label is the real value
     # "hide the segment", not the absence of a choice.
     for patch in ALL_PATCHES:
         setting = patch.setting
         if setting is not None and patch.id in applied and setting.recorded(options):
-            payload[setting.manifest_key] = setting.to_manifest(options)
+            payload[setting.key] = setting.to_manifest(options)
     return payload
 
 
@@ -117,10 +117,10 @@ def build_manifest(landed: list[str], options: Options) -> str:
 
 
 def read_manifest(source: Source) -> dict | None:
-    """The applied-patch record, or ``None`` for pristine/legacy binaries.
+    """The applied-patch record, or ``None`` for a pristine binary.
 
-    A byte scan, so asking it never buys a parse -- `status` and the menu's
-    first screen answer from here without touching the grammar.
+    A byte scan, so asking it never buys a parse -- the menu's first screen and
+    `apply`'s seed answer from here without touching the grammar.
     """
     marker = ("\n" + MANIFEST_PREFIX).encode()
     start = source.data.rfind(marker)
@@ -139,12 +139,12 @@ def read_manifest(source: Source) -> dict | None:
 def is_patched(source: Source) -> bool:
     """Whether the bundle carries our manifest -- the one mark of our work.
 
-    Authorship is declared, never inferred. This used to also sniff side
-    effects of our edits (the ``__cc_`` identifier prefix, the old
-    ``--version`` marker), until 2.1.227 shipped ``__cc_``-prefixed shell
-    variables of its own and every pristine install read as patched. An
-    inferred fingerprint is a bet that upstream's vocabulary never overlaps
-    ours, and once upstream ships it, it fires on every build after, forever.
+    Authorship is declared, never inferred. Upstream ships ``__cc_``-prefixed
+    shell variables of its own (2.1.227), so sniffing side effects of our edits
+    -- the ``__cc_`` identifier prefix, the ``--version`` marker -- would read
+    every pristine install as patched. An inferred fingerprint is a bet that
+    upstream's vocabulary never overlaps ours, and once upstream ships it, it
+    fires on every build after, forever.
     """
     return read_manifest(source) is not None
 
@@ -198,20 +198,12 @@ def backup_path_for(install: locate.Installation) -> Path:
 def existing_backup(install: locate.Installation) -> Path | None:
     """The pristine copy on disk, or ``None``.
 
-    One home for "is there a backup, and which file is it" -- read, restore,
-    dry-run and status all ask that one question, and asking it five ways is how
-    a safety net grows a hole.
-
-    Backups written before 0.2.0 doubled the name (``2.1.219.2.1.219.orig``:
-    for a version-named install the name *is* the version, so composing the two
-    only ever said it twice). Those are still adopted, because the alternative
-    is an install whose pristine copy silently stops counting as one.
+    One home for "is there a backup, and which file is it" -- read, restore and
+    the dry run all ask that one question, and asking it several ways is how a
+    safety net grows a hole.
     """
     dest = backup_path_for(install)
-    if dest.exists():
-        return dest
-    legacy = dest.with_name(f"{install.binary.name}.{install.version}.orig")
-    return legacy if install.version and legacy.exists() else None
+    return dest if dest.exists() else None
 
 
 def read_pristine(
@@ -231,6 +223,19 @@ def read_pristine(
     if backup is not None:
         return container.read(str(backup))
     return installed if installed is not None else container.read(str(install.binary))
+
+
+def read_installation(install: locate.Installation) -> tuple[Bundle, Bundle]:
+    """The installed binary and the pristine source to patch from.
+
+    Both the menu and ``apply`` want the pair -- the installed bundle for the
+    manifest the saved selection falls back to, the pristine one to bake from
+    -- and before the first apply they are the same file, which
+    :func:`read_pristine` already reads once. One home, so neither caller can
+    read it twice.
+    """
+    installed = container.read(str(install.binary))
+    return installed, read_pristine(install, installed=installed)
 
 
 def _backup(install: locate.Installation) -> Path:
@@ -347,10 +352,9 @@ def patch_installation(
         )
 
     # Unconditional, and there is deliberately no way to ask for a write without
-    # it. Two parameters have offered one now -- a switch that skipped the copy,
-    # then an `out_path` that wrote somewhere else instead -- and neither ever had
-    # a caller. What each really added was a path on which `restore` has nothing
-    # to hand back, which is the one guarantee this file exists to keep.
+    # it: a switch that skips the copy, or an output path that writes somewhere
+    # else, each adds a path on which `restore` has nothing to hand back, which
+    # is the one guarantee this file exists to keep.
     report.backup = _backup(install)
 
     container.write(source, patched_source, str(install.binary))
