@@ -106,6 +106,8 @@ class Outcome:
     #: a shape some builds simply lack; ``True`` -- the patch is broken without
     #: it.
     expect: bool = False
+    #: Work the selection asked for -- its absence is said on every run.
+    owed: bool = False
     #: Set when the patch raised. A patch that threw half-way applied whatever
     #: it had already done, so ``applied`` alone would read as success.
     error: str | None = None
@@ -127,7 +129,7 @@ class Outcome:
 
     @property
     def health(self) -> str:
-        """``ok`` / ``partial`` / ``broken`` -- the one place that verdict lives.
+        """``ok`` / ``partial`` / ``broken`` / ``absent`` -- the one place it lives.
 
         Every surface (apply report, doctor, menu) renders this same judgement,
         so none of them can disagree about whether a patch is fine.
@@ -140,7 +142,17 @@ class Outcome:
         unpatched under a green tick. A rewrite that *undercounts* its witness
         (``applied > candidates``, the header behind more reads than headers)
         is not drift and stays ``ok``.
+
+        ``absent`` is a patch asked only for what this build lacks: every step
+        owed, none found, nothing failed -- not on this build, and not broken.
         """
+        if (
+            not self.candidates
+            and not self.failures()
+            and self.steps
+            and all(step.owed for step in self.steps.values())
+        ):
+            return "absent"
         if not self.landed or self.failures():
             return "broken"
         if self.missed_steps() or self.applied < self.candidates:
@@ -161,7 +173,10 @@ class Outcome:
         self.notes.append(message)
 
     def declare(
-        self, required: tuple[str, ...] = (), optional: tuple[str, ...] = ()
+        self,
+        required: tuple[str, ...] = (),
+        optional: tuple[str, ...] = (),
+        owed: tuple[str, ...] = (),
     ) -> None:
         """Create sub-steps, before any of them does its work.
 
@@ -179,6 +194,8 @@ class Outcome:
             self.steps.setdefault(name, Outcome()).expect = True
         for name in optional:
             self.steps.setdefault(name, Outcome())
+        for name in owed:
+            self.steps.setdefault(name, Outcome()).owed = True
 
     def step(self, name: str) -> Outcome:
         """A declared sub-step, to record work against.

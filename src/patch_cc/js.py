@@ -13,8 +13,9 @@ across builds: the **names upstream's authors wrote** (property names, string
 literals, `case` labels, the API's own vocabulary) and the **shape of the
 grammar**. Everything a minifier regenerates -- local identifiers, statement
 order, comma-fusion versus separate statements, braces around a single
-statement, whether a helper was extracted -- lives strictly between those two,
-and a tree makes it invisible rather than obligatory.
+statement, whether a helper was extracted, which chunk declares a value --
+lives strictly between those two, and a tree makes it invisible rather than
+obligatory.
 
 The idiom is one line long:
 
@@ -172,9 +173,11 @@ class Defect:
 #: (``export{x as if}``, ``import{if as a}`` -- legal ES2015, which the
 #: code-split minifier emits when its two-letter alias generator lands on ``if``,
 #: ``in`` or ``do``), so it plants a localized ERROR inside the specifier list.
-#: patch-cc never locates in or edits module linkage -- every anchor is
-#: executable code (a property, a `case` label, a call, a string *in code*) -- so
-#: an error confined to a specifier list cannot touch a matcher or a splice.
+#: patch-cc reads linkage only to follow a name to the module that writes it
+#: (:meth:`Source.values`) and never edits it -- every anchor and every splice is
+#: executable code -- so an error confined to a specifier list cannot touch a
+#: splice, and the name it misreads (:func:`_misread`) reads as what it is: a
+#: value nothing here can see.
 #:
 #: Only the *clause* nodes are here, never ``import_statement``/
 #: ``export_statement``: those enclose executable code too -- ``export default
@@ -214,20 +217,39 @@ class _Module:
     handful of modules an anchor actually lands in.
     """
 
-    __slots__ = ("_lines", "_tree", "data", "dirty", "index")
+    __slots__ = (
+        "_bindings",
+        "_lines",
+        "_names",
+        "_tree",
+        "data",
+        "dirty",
+        "index",
+        "name",
+    )
 
     def __init__(
-        self, data: bytes, index: int, tree: Tree | None = None, *, dirty: bool = False
+        self,
+        data: bytes,
+        index: int,
+        tree: Tree | None = None,
+        *,
+        name: bytes = b"",
+        dirty: bool = False,
     ) -> None:
         self.data = data
         #: The blob module-table index this came from, so the container can
         #: splice the edited bytes back into the right record.
         self.index = index
+        #: The path Bun loads it under, which is how an ``import`` names it.
+        self.name = name
         #: Whether these bytes differ from the pristine module -- what the final
         #: from-scratch gate and the bytecode drop key off.
         self.dirty = dirty
         self._tree = tree
         self._lines: tuple[int, ...] | None = None
+        self._names: dict[bytes, tuple[_Name, ...]] = {}
+        self._bindings: dict[bytes, _Bound] = {}
 
     @property
     def parsed(self) -> bool:
@@ -262,6 +284,48 @@ class _Module:
             if literal is not None and literal.start_byte not in seen:
                 seen.add(literal.start_byte)
                 yield literal
+
+    def names(self, name: bytes) -> tuple[_Name, ...]:
+        """Every occurrence of the variable ``name`` here, each classified once."""
+        if name not in self._names:
+            root = self.root
+            spans = (hit.span() for hit in _identifier(name).finditer(self.data))
+            found = (cast("Node", root.descendant_for_byte_range(*s)) for s in spans)
+            self._names[name] = tuple(
+                _Name.of(node)
+                for node in found
+                if node.type in _NAMES and node.end_byte - node.start_byte == len(name)
+            )
+        return self._names[name]
+
+    def writes(self, read: Node) -> list[_Name] | None:
+        """Every write to the binding ``read`` names, ``None`` if undeclared here."""
+        name = read.text or b""
+        if name not in self._bindings:
+            self._bindings[name] = _bind(self.names(name))
+        reads, writes = self._bindings[name]
+        binding = reads.get(read.id)
+        return None if binding is None else writes[binding]
+
+    def binds(self, read: Node, site: Node) -> bool:
+        """Would ``read``'s name, at ``site``, name the same binding, declared by then?"""
+        name = read.text or b""
+        writes = self.writes(read) or []
+        around = [
+            found.scope
+            for found in self.names(name)
+            if found.scope is not None
+            and found.scope.start_byte <= site.start_byte
+            and site.end_byte <= found.scope.end_byte
+        ]
+        there = max(around, key=lambda r: (r.start_byte, -r.end_byte), default=None)
+        return self._bindings[name][0].get(read.id) == (
+            None if there is None else there.id
+        ) and all(
+            visible(write.writer, site)
+            for write in writes
+            if write.writer is not None and write.writer.type == "variable_declarator"
+        )
 
     def _spanning(self, needle: bytes) -> Iterator[Node]:
         root, at = self.root, self.data.find(needle)
@@ -320,7 +384,9 @@ class _Module:
                 old_end_point=self._point(edit.end),
                 new_end_point=_advance(self._point(edit.start), edit.text),
             )
-        result = _Module(data, self.index, _parser().parse(data, tree), dirty=True)
+        result = _Module(
+            data, self.index, _parser().parse(data, tree), name=self.name, dirty=True
+        )
         found = result.defect()
         # Only a defect this rewrite *introduced* is this rewrite's to answer
         # for. A module that already does not parse (in code, not the tolerated
@@ -387,9 +453,10 @@ class Source:
 
     Since 2.1.242 the app is dealt across well over a thousand modules; before it, one. This
     is that surface whichever it is -- ``find`` sweeps every module, ``count``
-    sums across them, ``apply`` routes each edit to the module its node came
-    from. A patch says ``source.find(name)`` and ``source.apply(edits)`` exactly
-    as it did against a single module, because the one-module world *is* the
+    sums across them, ``values`` follows a name into the module that writes it,
+    ``apply`` routes each edit to the module its node came from. A patch says
+    ``source.find(name)`` and ``source.apply(edits)`` exactly as it did against
+    a single module, because the one-module world *is* the
     many-module world with one module: nothing here is a case a patch has to
     know about.
 
@@ -398,29 +465,36 @@ class Source:
     so the fixpoint runs each pass from the same pristine surface.
     """
 
-    __slots__ = ("_entry", "_mods")
+    __slots__ = ("_entry", "_mods", "_named", "_roots")
 
     def __init__(self, data: bytes, tree: Tree | None = None) -> None:
         # The single-module surface: a whole bundle handed over as one buffer
         # (a test, the pre-split monolith, a from-scratch reparse). It is the
         # many-module surface with one module, and every method below treats it
         # as exactly that.
-        self._mods: tuple[_Module, ...] = (_Module(data, 0, tree),)
-        self._entry = 0
+        self._span((_Module(data, 0, tree),), 0)
 
     @classmethod
-    def over(cls, modules: list[tuple[int, bytes]], entry_index: int) -> Source:
-        """Span the given ``(blob index, bytes)`` modules, naming the entry.
+    def over(cls, modules: list[tuple[int, bytes, bytes]], entry_index: int) -> Source:
+        """Span the given ``(blob index, name, bytes)`` modules, naming the entry.
 
         The entry module is where the manifest lives, so its position is kept; every module is one the container declared to
         be JavaScript (:meth:`patch_cc.bun.blob.Blob.js_modules`).
         """
         self = cls.__new__(cls)
-        self._mods = tuple(_Module(data, index) for index, data in modules)
-        self._entry = next(
-            pos for pos, (index, _) in enumerate(modules) if index == entry_index
+        self._span(
+            tuple(_Module(data, index, name=name) for index, name, data in modules),
+            next(
+                pos for pos, (index, *_) in enumerate(modules) if index == entry_index
+            ),
         )
         return self
+
+    def _span(self, mods: tuple[_Module, ...], entry: int) -> None:
+        self._mods = mods
+        self._entry = entry
+        self._named = {module.name: pos for pos, module in enumerate(mods)}
+        self._roots: dict[int, int] = {}
 
     @property
     def data(self) -> bytes:
@@ -473,39 +547,134 @@ class Source:
         for module in self._mods:
             yield from module.literals(needle)
 
-    def module_index(self, node: Node) -> int | None:
-        """The blob index of the module a node belongs to, or ``None``.
+    def values(self, node: Node | None) -> Iterator[Node]:
+        """The values this expression can stand for, by the grammar's own routing.
 
-        Stable across the reparses `apply` does -- a module keeps its index
-        through every edit -- so it is the key to ask "are these two nodes in the
-        same module?" when the answer has to survive a step editing one of them
-        (a program root's id does not: an edited module is a fresh parse). Only
-        parsed modules are considered, and a node always comes from one.
+        A ternary answers with either branch, parentheses and a comma sequence
+        with their last expression, an assignment with the value it assigns,
+        ``&&``/``||``/``??`` with either side, and a name with every value
+        written to the binding it names, in whichever module declares it;
+        everything else -- a call, a member read, a literal, a name nothing here
+        declares -- is a value of its own. Identity by membership among these is
+        the rule the custom-model resolvers state for their rejection (2.1.234
+        wraps one in a dead recognizer, and the exact spelling reads a
+        behaviourally identical build as the resolver being gone), asked here of
+        any value a matcher has an opinion about: 2.1.246 mints ids for streamed
+        blocks, so the element that was the block read becomes
+        ``ce?{...S.contentBlock,id:V}:S.contentBlock`` -- a value that can still
+        *be* the block read, which an exact-node question reads as no block at
+        all, with every anchor count standing.
+
+        Kin to, and deliberately not one home with, ``patches.custom_models``'s
+        null question: null routes *asymmetrically* through ``||``/``??`` -- a
+        null on their left is exactly what both exist to pass over -- so what
+        can arrive and what can arrive null are two tables, not one fact spelled
+        twice.
         """
-        target = _root_of(node).id
-        for module in self._mods:
-            if module.parsed and module.root.id == target:
-                return module.index
-        return None
+        yield from self._values(node, set())
 
-    def find_local(self, anchor: Node, name: bytes | str) -> Iterator[Node]:
-        """Every node that *is* this authored name, in ``anchor``'s module alone.
-
-        A minified local is unique only within its module: the same two letters
-        are a different variable in a thousand other chunks. So resolving one --
-        a hoisted `agentType` constant read *through its value* to the declarator
-        that binds it -- searches the module the read lives in, never the whole
-        bundle, where :func:`only` would see a dozen unrelated declarations of
-        the same spelling and rightly refuse to choose. Pre-split, the one module
-        is the whole bundle, so this is exactly :meth:`find`; the two come apart
-        only once the app is dealt across modules (2.1.242).
-        """
-        needle = _bytes(name)
-        target = _root_of(anchor).id
-        for module in self._mods:
-            if module.parsed and module.root.id == target:
-                yield from module.find(needle)
+    def _values(self, node: Node | None, seen: set[int]) -> Iterator[Node]:
+        if node is None:
+            return
+        if node.type == "ternary_expression":
+            for field in ("consequence", "alternative"):
+                yield from self._values(node.child_by_field_name(field), seen)
+            return
+        if node.type in ("parenthesized_expression", "sequence_expression"):
+            parts = [child for child in children(node) if child.type != "comment"]
+            if parts:
+                yield from self._values(parts[-1], seen)
+            return
+        if node.type == "assignment_expression":
+            yield from self._values(node.child_by_field_name("right"), seen)
+            return
+        if node.type == "binary_expression":
+            operator = node.child_by_field_name("operator")
+            if operator is not None and text(operator) in ("&&", "||", "??"):
+                for field in ("left", "right"):
+                    yield from self._values(node.child_by_field_name(field), seen)
                 return
+        written = self._written(node)
+        if written is None:
+            yield node
+            return
+        for value in written:
+            if value.id not in seen:
+                seen.add(value.id)
+                yield from self._values(value, seen)
+
+    def walk(self, node: Node | None) -> Iterator[Node]:
+        """Every node under ``node``, and what each name among them stands for."""
+        for part in _walk(node, scoped=False):
+            yield part
+            for value in self._written(part) or ():
+                yield from self.values(value)
+
+    def portable(self, value: Node | None, site: Node) -> bool:
+        """Does every name in ``value`` mean, at ``site``, what it means here?
+
+        What a value copied to another site owes it, as a spliced name owes
+        :func:`visible`: bound to something else there, or not yet, it parses,
+        verifies, and throws when its line runs.
+        """
+        if value is None:
+            return False
+        module = self._mods[self._position(value)]
+        return module is self._mods[self._position(site)] and all(
+            module.binds(read, site)
+            for read in _walk(value, scoped=False)
+            if read.type in _READS and _Name.of(read).writer is None
+        )
+
+    def _written(self, read: Node) -> list[Node] | None:
+        """Every value written to what ``read`` reads, if its module declares it."""
+        if read.type not in _READS or _Name.of(read).writer is not None:
+            return None
+        writes = self._mods[self._position(read)].writes(read)
+        if writes is None:
+            return None
+        written: list[Node] = []
+        for name in writes:
+            writer = cast("Node", name.writer)
+            follow = _WRITTEN.get(writer.type) if name.held == name.node else None
+            value = follow(self, writer) if follow else name.node
+            if value is not None:
+                written.append(value)
+        return written
+
+    def _exported(self, specifier: Node) -> Node:
+        """The exporting module's own name for what an import specifier binds."""
+        local = _held_by(specifier, _WRITES["import_specifier"][0])
+        origin = self._origin(specifier, set())
+        if origin is not None:
+            return origin
+        return specifier if local is None else local
+
+    def _origin(self, specifier: Node, seen: set[int]) -> Node | None:
+        """The name declaring what a linkage specifier names, through re-exports."""
+        clause, name = specifier.parent, specifier.child_by_field_name("name")
+        if (
+            clause is None
+            or _misread(specifier)
+            or name is None
+            or specifier.id in seen
+        ):
+            return None
+        seen.add(specifier.id)
+        statement = up(clause, "import_statement", "export_statement")
+        path = None if statement is None else statement.child_by_field_name("source")
+        if path is None:
+            return name
+        pos = self._named.get((path.text or b"")[1:-1])
+        for found in () if pos is None else self._mods[pos].names(name.text or b""):
+            exporting = found.node.parent
+            if (
+                exporting is not None
+                and exporting.type == "export_specifier"
+                and _held_by(exporting, ("alias", "name")) == found.node
+            ):
+                return self._origin(exporting, seen)
+        return None
 
     def count(self, name: bytes | str) -> int:
         """Raw occurrences of a literal across the whole bundle.
@@ -537,26 +706,32 @@ class Source:
         batch = list(edits)
         if not batch:
             return self
-        roots = {m.root.id: pos for pos, m in enumerate(self._mods) if m.parsed}
         grouped: dict[int, list[Edit]] = {}
         for edit in batch:
-            pos = roots.get(_root_of(edit.anchor).id)
-            if pos is None:
-                # The anchor belongs to no module of *this* Source: a node held
-                # across the apply that already replaced its module, or from
-                # another parse entirely. A patch builds its batch from the source
-                # it is editing and commits it once, so this does not arise in a
-                # run -- but routing a splice by a stale node is the one mistake
-                # that would land it in the wrong module, so it is refused rather
-                # than guessed.
-                raise SyntaxGateError(
-                    "an edit was built from a node that is not in this bundle"
-                )
-            grouped.setdefault(pos, []).append(edit)
+            grouped.setdefault(self._position(edit.anchor), []).append(edit)
         mods = list(self._mods)
         for pos, module_edits in grouped.items():
             mods[pos] = mods[pos].apply(module_edits)
         return self._with(mods)
+
+    def _position(self, node: Node) -> int:
+        """Which of these modules a node belongs to -- its program root names it.
+
+        A node from no module of *this* Source -- one held across an apply that
+        already replaced its module, or from another parse entirely -- is
+        refused rather than guessed. A patch builds its batch from the source it
+        is editing and commits it once, so this does not arise in a run; but
+        routing a splice, or resolving a name, by a stale node is the one
+        mistake that would land it in the wrong module.
+        """
+        root = _root_of(node).id
+        if root not in self._roots:
+            self._roots = {
+                m.root.id: pos for pos, m in enumerate(self._mods) if m.parsed
+            }
+        if root not in self._roots:
+            raise SyntaxGateError("a node was used that is not in this bundle")
+        return self._roots[root]
 
     def append_manifest(self, text: bytes | str) -> Source:
         """Append the manifest comment to the entry module, through the gate.
@@ -570,8 +745,7 @@ class Source:
 
     def _with(self, mods: list[_Module]) -> Source:
         clone = Source.__new__(Source)
-        clone._mods = tuple(mods)
-        clone._entry = self._entry
+        clone._span(tuple(mods), self._entry)
         return clone
 
     # ---------------------------------------------------------------- gate
@@ -665,6 +839,14 @@ def _in_linkage(node: Node) -> bool:
     return False
 
 
+def _misread(specifier: Node) -> bool:
+    """Did the alias gap (:data:`_LINKAGE`) misread this specifier? Its ERROR sits beside it."""
+    return specifier.has_error or any(
+        side is not None and side.type == "ERROR"
+        for side in (specifier.prev_sibling, specifier.next_sibling)
+    )
+
+
 # ----------------------------------------------------------------- walking
 
 
@@ -744,7 +926,7 @@ def _governs(declarator: Node) -> Node | None:
     if declaration is None:
         return None
     if declaration.type == "variable_declaration":
-        return climb(declaration, _is_function_body)
+        return _hoisted(declaration)
     return climb(declaration.parent, of_type(*_REGIONS))
 
 
@@ -808,6 +990,171 @@ def visible(declarator: Node, site: Node) -> bool:
         decl_fn.start_byte if decl_fn else -1
     )
     return declaration.end_byte <= site.start_byte if same_scope else True
+
+
+# ----------------------------------------------------------------- bindings
+
+_READS = ("identifier", "shorthand_property_identifier")
+_NAMES = (*_READS, "shorthand_property_identifier_pattern")
+
+
+def _identifier(name: bytes) -> re.Pattern[bytes]:
+    """``name`` wherever no identifier character runs on from either end of it."""
+    escaped = re.escape(name)
+    return re.compile(rb"%b(?![\w$])(?<![\w$]%b)" % (escaped, escaped))
+
+
+#: Destructuring patterns, and the fields their bound parts sit in (none: every child).
+_PATTERNS: dict[str, tuple[str, ...]] = {
+    "object_pattern": (),
+    "array_pattern": (),
+    "rest_pattern": (),
+    "pair_pattern": ("value",),
+    "assignment_pattern": ("left",),
+    "object_assignment_pattern": ("left",),
+}
+
+
+def _hoisted(construct: Node) -> Node | None:
+    body = climb(construct, _is_function_body)
+    return body.parent if body is not None and body.type != "program" else body
+
+
+def _block(construct: Node) -> Node | None:
+    return climb(construct.parent, of_type(*_REGIONS))
+
+
+def _itself(construct: Node) -> Node:
+    return construct
+
+
+def _function(parameters: Node) -> Node | None:
+    return parameters.parent
+
+
+def _assigns(_construct: Node) -> None:
+    return None
+
+
+def _loop(statement: Node) -> Node | None:
+    kind = statement.child_by_field_name("kind")
+    if kind is None:
+        return None
+    return _hoisted(statement) if kind.type == "var" else statement
+
+
+#: What writes a name: the fields it sits in, and the region it declares it in, if any.
+_WRITES: dict[str, tuple[tuple[str, ...], Callable[[Node], Node | None]]] = {
+    "variable_declarator": (("name",), _governs),
+    "assignment_expression": (("left",), _assigns),
+    "augmented_assignment_expression": (("left",), _assigns),
+    "update_expression": (("argument",), _assigns),
+    "for_in_statement": (("left",), _loop),
+    "formal_parameters": ((), _function),
+    "arrow_function": (("parameter",), _itself),
+    "catch_clause": (("parameter",), _itself),
+    "function_expression": (("name",), _itself),
+    "generator_function": (("name",), _itself),
+    "class": (("name",), _itself),
+    "function_declaration": (("name",), _block),
+    "generator_function_declaration": (("name",), _block),
+    "class_declaration": (("name",), _block),
+    "import_specifier": (("alias", "name"), _root_of),
+    "import_clause": ((), _root_of),
+    "namespace_import": ((), _root_of),
+}
+
+#: The writes that say what they write; any other holds what only running would.
+_WRITTEN: dict[str, Callable[[Source, Node], Node | None]] = {
+    "variable_declarator": lambda _, writer: writer.child_by_field_name("value"),
+    "assignment_expression": lambda _, writer: writer.child_by_field_name("right"),
+    "import_specifier": lambda source, writer: source._exported(writer),
+}
+
+
+def _held_by(construct: Node, fields: tuple[str, ...]) -> Node | None:
+    return next(
+        (
+            held
+            for held in map(construct.child_by_field_name, fields)
+            if held is not None
+        ),
+        None,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Name:
+    """One occurrence of a variable, as the grammar places it."""
+
+    node: Node
+    #: The construct writing it (`_WRITES`), or ``None`` for a read.
+    writer: Node | None
+    #: The name itself, or the pattern the writer destructures it from.
+    held: Node
+    #: The region the writer declares it in, ``None`` unless it declares.
+    scope: Node | None
+
+    @classmethod
+    def of(cls, node: Node) -> _Name:
+        held, writer = node, node.parent
+        while (
+            writer is not None
+            and writer.type in _PATTERNS
+            and _holds(writer, held, _PATTERNS[writer.type])
+        ):
+            held, writer = writer, writer.parent
+        if (
+            writer is None
+            or writer.type not in _WRITES
+            or not _holds(writer, held, _WRITES[writer.type][0])
+        ):
+            return cls(node, None, node, None)
+        return cls(node, writer, held, _WRITES[writer.type][1](writer))
+
+
+def _holds(construct: Node, child: Node, fields: tuple[str, ...]) -> bool:
+    return not fields or _held_by(construct, fields) == child
+
+
+#: Each read's binding, and each binding's writes; a binding is its region's id.
+_Bound = tuple[dict[int, int], dict[int, list[_Name]]]
+
+
+def _bind(names: tuple[_Name, ...]) -> _Bound:
+    """Resolve every occurrence of one name in one module at once.
+
+    Regions nest, so one sweep in byte order keeps the regions open at each
+    occurrence, and the innermost of them is the declaration it resolves to --
+    the nearest shadows every one further out.
+    """
+    regions = iter(
+        sorted(
+            {
+                name.scope.id: name.scope for name in names if name.scope is not None
+            }.values(),
+            key=lambda region: (region.start_byte, -region.end_byte),
+        )
+    )
+    upcoming = next(regions, None)
+    held: list[Node] = []
+    reads: dict[int, int] = {}
+    writes: dict[int, list[_Name]] = {}
+    for name in names:
+        site = name.node
+        while upcoming is not None and upcoming.start_byte <= site.start_byte:
+            held.append(upcoming)
+            upcoming = next(regions, None)
+        while held and held[-1].end_byte < site.end_byte:
+            held.pop()
+        region = name.scope if name.scope is not None else next(reversed(held), None)
+        if region is None:
+            continue
+        if name.writer is None:
+            reads[site.id] = region.id
+        else:
+            writes.setdefault(region.id, []).append(name)
+    return reads, writes
 
 
 def _walk(node: Node | None, scoped: bool) -> Iterator[Node]:
@@ -1086,49 +1433,6 @@ def is_true(node: Node | None) -> bool:
     return node is not None and (
         node.type == "true" or (node.type == "unary_expression" and text(node) == "!0")
     )
-
-
-def values(node: Node | None) -> Iterator[Node]:
-    """The values this expression can stand for, by the grammar's own routing.
-
-    A ternary answers with either branch, parentheses and a comma sequence with
-    their last expression, an assignment with the value it assigns, and
-    ``&&``/``||``/``??`` with either side; everything else -- a call, a read, a
-    literal -- is a value of its own. Identity by membership among these is the
-    rule the custom-model resolvers state for their rejection (2.1.234 wraps
-    one in a dead recognizer, and the exact spelling reads a behaviourally
-    identical build as the resolver being gone), asked here of any value a
-    matcher has an opinion about: 2.1.246 mints ids for streamed blocks, so the
-    element that was the block read becomes ``ce?{...S.contentBlock,id:V}:S.contentBlock``
-    -- a value that can still *be* the block read, which an exact-node question
-    reads as no block at all, with every anchor count standing.
-
-    Kin to, and deliberately not one home with, ``patches.custom_models``'s null
-    question: null routes *asymmetrically* through ``||``/``??`` -- a null on
-    their left is exactly what both exist to pass over -- so what can arrive
-    and what can arrive null are two tables, not one fact spelled twice.
-    """
-    if node is None:
-        return
-    if node.type == "ternary_expression":
-        for field in ("consequence", "alternative"):
-            yield from values(node.child_by_field_name(field))
-        return
-    if node.type in ("parenthesized_expression", "sequence_expression"):
-        parts = [child for child in children(node) if child.type != "comment"]
-        if parts:
-            yield from values(parts[-1])
-        return
-    if node.type == "assignment_expression":
-        yield from values(node.child_by_field_name("right"))
-        return
-    if node.type == "binary_expression":
-        operator = node.child_by_field_name("operator")
-        if operator is not None and text(operator) in ("&&", "||", "??"):
-            for field in ("left", "right"):
-                yield from values(node.child_by_field_name(field))
-            return
-    yield node
 
 
 def receiver(node: Node | None) -> Node | None:

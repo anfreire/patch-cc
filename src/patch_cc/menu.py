@@ -128,15 +128,6 @@ class PatchRow:
 
 
 @dataclass(slots=True)
-class AgentRow:
-    """Per-agent override state; edited in the agents modal, never a list row."""
-
-    agent: BuiltinAgent
-    #: The chosen override, or ``_KEEP`` for "leave the built-in default".
-    choice: str = _KEEP
-
-
-@dataclass(slots=True)
 class TextRow:
     """A free-text value; edited in the input modal, never a list row."""
 
@@ -166,7 +157,10 @@ class MenuModel:
     agents: list[BuiltinAgent]
     models: list[str]
     patch_rows: dict[str, PatchRow] = field(default_factory=dict)
-    agent_rows: list[AgentRow] = field(default_factory=list)
+    #: Saved patches this build has no surface for, kept for a build that does.
+    kept_patches: list[str] = field(default_factory=list)
+    #: The saved subagent pins as edited here, those this build cannot take too.
+    pins: dict[str, str] = field(default_factory=dict)
     text_rows: dict[str, TextRow] = field(default_factory=dict)
     #: Custom models to register -- edited in the
     #: Custom models submenu, seeded and saved exactly like every other choice here.
@@ -199,42 +193,17 @@ class MenuModel:
             )
         model.custom_models = list(seed.options.custom_models)
         model.endpoint = seed.options.endpoint
+        model.pins = dict(seed.options.subagent_models)
         for group in GROUP_ORDER:
             for patch in by_group().get(group, []):
                 # A patch this build has no surface for gets no row at all: what
-                # the binary cannot support is not offered, the same discovery
-                # rule the agent and model pickers follow, and a build that
-                # carries the surface again shows the row by itself. A seed
-                # (manifest or cache) may still name it -- a saved org-label
-                # replayed onto 2.1.246 -- and the selection the screen shows
-                # is the selection that runs.
+                # the binary cannot support is not offered, and a build that
+                # carries the surface again shows the row by itself.
                 if patch.absent(pristine.source) is None:
                     model.patch_rows[patch.id] = PatchRow(
                         patch, patch.id in seed.patches
                     )
-
-        # A custom id this run would register is a valid pin too, so a remembered
-        # custom override survives instead of snapping back to keep.
-        offered = {*models, *custom.model_names(model.custom_models)}
-        left_out = [f"patch {pid}" for pid in seed.dropped_patches]
-        for agent in agents:
-            picked = seed.options.subagent_models.get(agent.name)
-            if picked is not None and picked not in offered:
-                left_out.append(f"pin {agent.name}={picked}")
-                picked = None
-            model.agent_rows.append(AgentRow(agent, picked or _KEEP))
-        if left_out:
-            # What the saved selection asks for that this tool or this build
-            # does not offer -- a patch id this tool lacks, a pin to a model the
-            # build lacks. Said once, where the replay would warn, and the next
-            # apply writes the file without it. The unreadable-file note and
-            # this one cannot both apply: nothing was read from that file.
-            model.notice = (
-                "The saved selection names what this patch-cc or this build "
-                "does not offer, so it was left out: "
-                + ", ".join(left_out)
-                + ". Applying rewrites the saved selection without it."
-            )
+        model.kept_patches = [p for p in seed.patches if p not in model.patch_rows]
 
         brand = seed.options.brand
         model.text_rows["brand"] = TextRow("brand", "name", brand)
@@ -242,6 +211,21 @@ class MenuModel:
             "suffix", "marker", seed.options.version_suffix
         )
         model.text_rows["org"] = TextRow("org", "label", seed.options.org_label)
+
+        asked = model.selection().active().options.subagent_models
+        shown = model.shown()
+        kept = [
+            *model.kept_patches,
+            *(f"{a}={m}" for a, m in asked.items() if a not in shown),
+        ]
+        unoffered = {
+            "Saved patches this patch-cc does not have are left out, and "
+            "applying drops them from the file": seed.dropped_patches,
+            "Saved choices this build does not offer are kept for one that does": kept,
+        }
+        said = [f"{why}: {', '.join(what)}." for why, what in unoffered.items() if what]
+        if said:
+            model.notice = " ".join(filter(None, (model.notice, *said)))
         return model
 
     def rows(self) -> list[Row]:
@@ -257,8 +241,20 @@ class MenuModel:
                 rows.extend(offered)
         return rows
 
+    def offered(self) -> set[str]:
+        """What a pin may name here; a custom model joins only a list discovery read."""
+        listed = any(model != INHERIT for model in self.models)
+        registered = custom.model_names(self.custom_models) if listed else []
+        return {*self.models, *registered}
+
+    def shown(self) -> dict[str, str]:
+        """The saved pins this build takes."""
+        agents = {agent.name for agent in self.agents}
+        offered = self.offered()
+        return {a: m for a, m in self.pins.items() if a in agents and m in offered}
+
     def overridden(self) -> int:
-        return sum(1 for row in self.agent_rows if row.choice != _KEEP)
+        return len(self.baked().options.subagent_models)
 
     def applied_ids(self) -> set[str]:
         """What the binary claims, limited to what this build offers.
@@ -272,22 +268,29 @@ class MenuModel:
     # -- what apply would do
 
     def selection(self) -> cache.Selection:
-        """All preferences; Selection.active derives what the binary should receive."""
+        """All preferences; :meth:`active` derives what the binary should receive."""
         options = Options(
             brand=self.text_rows["brand"].value.strip() or derived_brand(),
             version_suffix=self.text_rows["suffix"].value.strip() or DEFAULT_SUFFIX,
             org_label=self.text_rows["org"].value.strip(),
-            subagent_models={
-                row.agent.name: row.choice
-                for row in self.agent_rows
-                if row.choice != _KEEP
-            },
+            subagent_models=dict(self.pins),
             custom_models=list(self.custom_models),
             endpoint=self.endpoint,
         )
-        return cache.Selection(
-            [pid for pid, row in self.patch_rows.items() if row.on], options
-        )
+        rows = [pid for pid, row in self.patch_rows.items() if row.on]
+        return cache.Selection([*rows, *self.kept_patches], options)
+
+    def active(self, selection: cache.Selection) -> cache.Selection:
+        """What applying hands the patches: Selection.active, less the kept patches."""
+        active = selection.active()
+        active.patches = [p for p in active.patches if p not in self.kept_patches]
+        return active
+
+    def baked(self) -> cache.Selection:
+        """The selection as applying would record it on this build."""
+        selection = self.selection()
+        selection.options.subagent_models = self.shown()
+        return self.active(selection)
 
 
 # ----------------------------------------------------------------- modals
@@ -820,7 +823,7 @@ class MenuApp:
             "org-label": "org",
         }
         if patch_id == "subagent-models":
-            if not self.model.agent_rows:
+            if not self.model.agents:
                 self.flash = "no agents discovered in this bundle"
                 return
             self._open_agents_modal()
@@ -845,25 +848,25 @@ class MenuApp:
 
     def _open_agents_modal(self) -> None:
         model = self.model
-        rows = {row.agent.name: row for row in model.agent_rows}
-        pad = max(len(name) for name in rows) + 2
+        agents = {agent.name: agent for agent in model.agents}
+        pad = max(len(name) for name in agents) + 2
 
         def label(name: str, selected: bool) -> Text:
-            row = rows[name]
             text = Text(f"{name:<{pad}}", style="bold" if selected else "")
-            if row.choice == _KEEP:
-                text.append(f"keep ({row.agent.default})", style="dim")
+            choice = model.shown().get(name)
+            if choice is None:
+                text.append(f"keep ({agents[name].default})", style="dim")
             else:
-                text.append(row.choice, style=_VALUE)
+                text.append(choice, style=_VALUE)
             return text
 
         def pick(name: str) -> None:
-            self._open_model_modal(rows[name])
+            self._open_model_modal(agents[name])
 
         self._push(
             PickModal(
                 "Subagent models",
-                list(rows),
+                list(agents),
                 label,
                 on_pick=pick,
                 width=52,
@@ -872,10 +875,12 @@ class MenuApp:
             None,
         )
 
-    def _open_model_modal(self, agent_row: AgentRow) -> None:
-        custom_ids = [model.id for model in self.model.custom_models]
+    def _open_model_modal(self, agent: BuiltinAgent) -> None:
+        offered = self.model.offered()
+        custom_ids = [m.id for m in self.model.custom_models if m.id in offered]
         items = [_KEEP, *self.model.models, *custom_ids]
         custom_set = set(custom_ids)
+        current = self.model.shown().get(agent.name, _KEEP)
 
         def label(value: str, _selected: bool) -> Text:
             """The handle you pick, then a dim parenthetical explaining it.
@@ -886,7 +891,7 @@ class MenuApp:
             """
             head, note = value, ""
             if value == _KEEP:
-                head, note = "keep default", agent_row.agent.default
+                head, note = "keep default", agent.default
             elif value == INHERIT:
                 note = "main model"
             elif value in custom_set:
@@ -899,8 +904,11 @@ class MenuApp:
         def picked(choice: object) -> None:
             if not isinstance(choice, str):
                 return
-            agent_row.choice = choice
-            self.model.patch_rows["subagent-models"].on = bool(self.model.overridden())
+            if choice == _KEEP:
+                self.model.pins.pop(agent.name, None)
+            else:
+                self.model.pins[agent.name] = choice
+            self.model.patch_rows["subagent-models"].on = bool(self.model.pins)
             # A custom model only resolves once custom-models registers it, so the
             # pin selects that row too -- here, where the tick visibly moves,
             # rather than at save time behind a row still drawn as off.
@@ -909,12 +917,10 @@ class MenuApp:
 
         self._push(
             PickModal(
-                f"Model for {agent_row.agent.name}",
+                f"Model for {agent.name}",
                 items,
                 label,
-                current=custom.aliases(self.model.custom_models).get(
-                    agent_row.choice, agent_row.choice
-                ),
+                current=custom.aliases(self.model.custom_models).get(current, current),
                 width=46,
             ),
             picked,
@@ -1368,19 +1374,14 @@ class MenuApp:
         if not isinstance(result, list):
             return
         previous = {model.id for model in self.model.custom_models}
+        shown = self.model.shown()
         self.model.custom_models = custom.models_from(
             custom.model_values([pick.model for pick in result])
         )
         chosen = {model.id for model in self.model.custom_models}
-        offered = {
-            *self.model.models,
-            *custom.model_names(self.model.custom_models),
-        }
-        reverted = []
-        for row in self.model.agent_rows:
-            if row.choice != _KEEP and row.choice not in offered:
-                row.choice = _KEEP
-                reverted.append(row.agent.name)
+        reverted = [agent for agent in shown if agent not in self.model.shown()]
+        for agent in reverted:
+            del self.model.pins[agent]
         if self._custom_row is not None:
             self._custom_row.on = bool(chosen) and (
                 self._custom_row.on or bool(chosen - previous)
@@ -1446,7 +1447,7 @@ class MenuApp:
                 self._open_custom_menu(row)
                 return
         selection = self.model.selection()
-        count = len(selection.active().patches)
+        count = len(self.model.active(selection).patches)
         if not count:
             self._confirm_restore()
             return
@@ -1471,7 +1472,7 @@ class MenuApp:
     def _apply(
         self, selection: cache.Selection
     ) -> tuple[patcher.PatchReport, Status | None, str]:
-        active = selection.active()
+        active = self.model.active(selection)
         report = patcher.patch_installation(
             self.model.install,
             active.patches,
@@ -1765,7 +1766,7 @@ class MenuApp:
                 "unsaved"
                 if self._unsaved()
                 else "pending apply"
-                if cache.pending(self.model.selection(), model.status.manifest)
+                if cache.pending(model.baked(), model.status.manifest)
                 else ""
             )
             if note:
@@ -1883,7 +1884,7 @@ class MenuApp:
         report = self.report
         if report is None:
             return lines, None
-        options = self.model.selection().active().options
+        options = report.options
         for patch, outcome in report.results:
             mark, style = MARKS[outcome.health]
             line = Text()

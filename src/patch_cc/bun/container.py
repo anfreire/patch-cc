@@ -73,7 +73,10 @@ def read(path: str) -> Bundle:
         section = macho.read_section(path)
 
     parsed = blobmod.parse(blobmod.unwrap_section(section))
-    modules = [(m.index, parsed.payload(m.contents)) for m in parsed.js_modules()]
+    modules = [
+        (m.index, parsed.payload(m.name), parsed.payload(m.contents))
+        for m in parsed.js_modules()
+    ]
     return Bundle(
         path=path,
         kind=kind,

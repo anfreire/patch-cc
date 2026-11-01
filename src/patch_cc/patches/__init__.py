@@ -9,8 +9,9 @@ load-bearing rather than inherited. ``custom-models`` writes the chosen custom i
 into the Task tool's model enum; ``subagent-models`` reads that same enum to
 decide what a subagent may be pinned to. Registering first means a pin to a
 custom model is offered exactly when that model is really in the bundle -- so a
-``custom-models`` the fixpoint had to drop takes its pins down with it instead of
-leaving a definition pointing at a model nothing registered.
+``custom-models`` that could not register it, dropped or left without its
+``enum``, takes those pins down with it instead of leaving a definition pointing
+at a model nothing registered.
 """
 
 from __future__ import annotations

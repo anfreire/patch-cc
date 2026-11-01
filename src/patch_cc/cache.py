@@ -102,18 +102,17 @@ def seed(manifest: dict | None) -> tuple[Selection, str | None]:
     return from_manifest(manifest), note
 
 
-def pending(selection: Selection, manifest: dict | None) -> bool:
-    """Would applying change the binary? What it would bake, against what the
-    binary records -- the manifest as carried, not re-read through this tool's
-    vocabulary. A manifest may name a patch this tool has no id for, and that
-    patch is still *in* the binary; re-read through ``from_manifest`` it would
-    be dropped, and the header would say "matches" over a binary that applying
-    would change.
+def pending(baked: Selection, manifest: dict | None) -> bool:
+    """Would applying change the binary? What it would bake -- the patch input,
+    less what this build's patches skip -- against what the binary records --
+    the manifest as carried, not re-read through this tool's vocabulary. A
+    manifest may name a patch this tool has no id for, and that patch is still
+    *in* the binary; re-read through ``from_manifest`` it would be dropped, and
+    the header would say "matches" over a binary that applying would change.
     """
     from .patcher import manifest_payload
 
-    active = selection.active()
-    would = manifest_payload(sorted(active.patches), active.options)
+    would = manifest_payload(sorted(baked.patches), baked.options)
     carried = dict(manifest) if manifest is not None else {"patches": []}
     carried["patches"] = sorted(
         pid for pid in carried.get("patches", []) if isinstance(pid, str)

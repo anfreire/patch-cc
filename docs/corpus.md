@@ -99,13 +99,48 @@ never the size:
 | `2.1.276` | 232 MB | `8a56c8a14bd3cb246e2bdb7e60aefe0f609bff78c8bbcc5ea6b1817c111c6145` |
 | `2.1.277` | 234 MB | `722210f05ba494d8f6df69423c4d4f2960900f7a007d0532851c7a36e375cab7` |
 | `2.1.278` | 234 MB | `5c4735937844e84f8a93306e841a5b0e12252909b07870f789b190468da147ab` |
+| `2.1.280` | 234 MB | `1e08503dbdf3c2cb0d706d32f3408277388d1c76ef108673e8fe42c1b322925b` |
+| `2.1.281` | 237 MB | `56fe3da88458465fb27d7e9299dddb3fead55750fb9c2de795f233b5eea6dce1` |
+| `2.1.282` | 239 MB | `3afe8535c0cc33f0e24f7b25dab7a1727b8b592196f8496a8bc302ba2161eed3` |
+| `2.1.283` | 242 MB | `1859583ce32920595c61ef868bee52e1b1594f7486db209935e01f1e5e804ae2` |
+| `2.1.284` | 243 MB | `5cd90aabd83f8a15136c35aa37bb1d92b348993573316643dc3fe4e04afbf88f` |
+| `2.1.285` | 240 MB | `33dad1ec615a2e08cc78b494f05c110e49916de2c79d78ec8799ebf46b233d29` |
+| `2.1.286` | 242 MB | `fe503f65c6289d59c23e5b21ae44f03583f997dd33a2cbfc75ab4f96fb8fc73f` |
+| `2.1.287` | 244 MB | `3920489a5109cff5786a1a392c25277408ff22bc796d5edb9c16a60e5a1718f0` |
+| `2.1.288` | 246 MB | `0298068b686e7fdbaf9402a7a587bb7f49c0b0e084de09f69145a0719207640c` |
+| `2.1.289` | 246 MB | `a186b99e4a9c88366cd49df2f7dad56c61fc306ef0140b19ee64b7c42a8d1348` |
+| `2.1.290` | 250 MB | `ea38ee1a1f946eea9bc6e97fb912dbe71fc379b25cc605d91b308afa1ca08be7` |
+| `2.1.291` | 250 MB | `078fad28d0297c9a25d306b635b2d8816c6839347520f29eb54ffea5d56142fb` |
+| `2.1.292` | 251 MB | `a967e7b1d8b4e47ee421d5433027880347952b0c0857abf880e2c942a4ec93b3` |
+| `2.1.293` | 253 MB | `8968405e26db478af44eabc4635ab5ca557057b702a54460a59c13e1b253e978` |
+| `2.1.294` | 253 MB | `27122ca7b624f537546fbef35b80c66370d974ff258f3d9b10ac50bb8771f262` |
+| `2.1.295` | 256 MB | `4503bfe11a6c7fcc1e0b39b5e0d347c04248f750b03b0977b3ad6b531fe6f358` |
+| `2.1.296` | 257 MB | `24972e3bc859fab2b46ed4c1e51f7d6130f06d3bd550811a114640de3370d0de` |
+| `2.1.299` | 265 MB | `2d894a4b1bfaaa9aab72aeff7803e3c73bc2510f279a171f6b8f59f72d17d077` |
+| `2.1.300` | 267 MB | `674deba0bba9aee479f4503c438b49303b6fdd304b9a471b14977aaec5215453` |
+| `2.1.301` | 268 MB | `bc1aad9982c7b59c7d889ff92595d61cf46e0a6eae074cb551d932a989bcd222` |
+| `2.1.302` | 286 MB | `60d7eb7f12fbb28a52533fe8be5884097403562aa02dc73991a021c7067e29a5` |
+| `2.1.303` | 286 MB | `375988f457756524234695cf2d8f64ace99c5f68682e47ea24862a843c191450` |
+| `2.1.304` | 289 MB | `ea0f135784631619a7a409d07322ecec964f9cc4fd377508ed1ba3f141f27912` |
+| `2.1.305` | 291 MB | `86cb722ab68348877dba7971e4d0c659919e05e6228c05e006e83da320e656ef` |
+| `2.1.306` | 291 MB | `520bc6c1f40af466bd03a278b5ae1af1a2938bc7de5b9e5cb15526da20d71cfe` |
+| `2.1.307` | 292 MB | `6021eb72d20d0682b720bdc63acd2a5cd2270895d1f10d9ca2a88cbfa7b9dd0e` |
+| `2.1.308` | 292 MB | `356733f185fa988e6bf3aa9a555269fdd167982a2e2a80d3c8a78037bb92ad58` |
+| `2.1.309` | 293 MB | `4d704a8aecbe038affa3000f498ae17c1b4f753add8facb8764120affc99b658` |
+| `2.1.310` | 292 MB | `b73676430af12f97316a798b8371f81d640f90a58bdcb8f3ce56a835bb47df56` |
+| `2.1.311` | 294 MB | `86dc1fcc69498159eaf15f446613e847010f9036bfbbdffd4c49350be8489ada` |
+| `2.1.312` | 294 MB | `4f4178ce41d83e23341ebfbaecdbcf8ea6bf7baea0690025abe49eeec3a5d01d` |
+| `2.1.314` | 298 MB | `4487042b4c4f5d88d4568f68ae98aae0b1ffae58864cf57fb868641bc5f84594` |
+| `2.1.315` | 328 MB | `a3b9d66caf61b40d6aad99ed4de80f48f17e0e024ddf1b6e4289efade06105df` |
+| `2.1.316` | 328 MB | `fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824` |
 
 This set covers the span the playbook's tree-move measurements were taken over
 (`2.1.210` → `2.1.233`), the 2.1.242 split, the 2.1.246 stream-store
 migration, the 2.1.247 selector reads it was read back through, the
 2.1.257 compiled transcript renderer that retired live thinking's render half,
-and the 2.1.269 Bun 1.4.3 records that retired the container's record walker, so
-each is re-checkable here rather than historical.
+the 2.1.269 Bun 1.4.3 records that retired the container's record walker, and
+the 2.1.248, 2.1.304 and 2.1.314 values moved into other chunks that names now
+resolve across, so each is re-checkable here rather than historical.
 
 ## Keep it complete
 

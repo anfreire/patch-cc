@@ -102,7 +102,7 @@ def _sibling_arm(arm: js.Node, label: str) -> js.Node | None:
     )
 
 
-def _line_count(arm: js.Node, content: str) -> str | None:
+def _line_count(source: Source, arm: js.Node, created: js.Node) -> str | None:
     """How this build counts the lines of a created file.
 
     The arm already computes it for its own "Wrote N lines" summary, so the
@@ -126,37 +126,19 @@ def _line_count(arm: js.Node, content: str) -> str | None:
     has to be single is the *answer*, not the call: two different counts would
     leave nothing to borrow.
     """
-    borrowed = {
-        js.text(counted)
+    content = js.text(js.call_props(created)["content"])
+    counted = [
+        value
         for summary in js.every(arm, js.of_type("call_expression"))
         if _LINE in [js.text(a) for a in js.arguments(summary)[1:]]
-        for counted in [_counted(arm, js.arguments(summary)[0])]
-        if counted is not None
-        and counted.type == "call_expression"
-        and [js.text(a) for a in js.arguments(counted)] == [content]
-    }
-    return borrowed.pop() if len(borrowed) == 1 else None
-
-
-def _counted(arm: js.Node, number: js.Node) -> js.Node | None:
-    """The expression behind the number a summary pluralises.
-
-    A minifier is free to bind it to a local first and free not to, so both
-    spellings answer one question -- and the local is resolved where it is
-    *read*, because each branch of this arm declares its own.
-    """
-    if number.type != "identifier":
-        return number
-    declared = js.first(
-        arm,
-        lambda n: (
-            n.type == "variable_declarator"
-            and (bound := n.child_by_field_name("name")) is not None
-            and js.text(bound) == js.text(number)
-            and js.visible(n, number)
-        ),
-    )
-    return declared.child_by_field_name("value") if declared is not None else None
+        for value in source.values(js.arguments(summary)[0])
+        if value.type == "call_expression"
+        and [js.text(a) for a in js.arguments(value)] == [content]
+    ]
+    borrowed = {js.text(value) for value in counted}
+    if len(borrowed) != 1 or not all(source.portable(v, created) for v in counted):
+        return None
+    return borrowed.pop()
 
 
 def _create_diff_colors(source: Source, _options: Options, outcome: Outcome) -> Source:
@@ -213,12 +195,15 @@ def _create_diff_colors(source: Source, _options: Options, outcome: Outcome) -> 
             js.text(made["content"]),
             js.text(made[_VERBOSE]),
         )
-        renderer = js.text(updated.child_by_field_name("function"))
-        component = js.text(js.arguments(updated)[0])
-        style = js.text(js.call_props(updated)["style"])
-        lines = _line_count(create_arm, content)
-        if lines is None:
+        lent = (
+            updated.child_by_field_name("function"),
+            js.arguments(updated)[0],
+            js.call_props(updated)["style"],
+        )
+        lines = _line_count(source, create_arm, created)
+        if lines is None or not all(source.portable(node, created) for node in lent):
             continue
+        renderer, component, style = map(js.text, lent)
 
         edits.append(
             Edit.replace(

@@ -18,10 +18,8 @@ from rich.markup import escape
 
 from . import cache, locate, patcher
 from .bun import Bundle, BunError
-from .custom_models import model_names
 from .js import Source, SyntaxGateError
 from .patches import Options, Outcome
-from .patches.agents import INHERIT, discover_agents, discover_models
 from .patches.custom_models import validate_models
 from .ui import (
     MARKS,
@@ -53,7 +51,7 @@ def _saved(installed: Bundle) -> cache.Selection:
         # A replay that quietly applies a smaller set than was saved is the one
         # thing a replay must never be. The file is readable and the user's to
         # edit, so it can name an id this tool does not have -- said here, once,
-        # the way the skipped pins are said below.
+        # the way a retired surface is said below.
         warn(
             "saved selection names patch id(s) this patch-cc does not have, "
             "skipped: " + ", ".join(selection.dropped_patches)
@@ -62,12 +60,13 @@ def _saved(installed: Bundle) -> cache.Selection:
 
 
 def _for_build(selection: cache.Selection, source: Source) -> tuple[list[str], Options]:
-    """The patch input, with what this build cannot honour said and skipped.
+    """The patch input, with a surface this build lacks said and skipped.
 
-    A build can retire a surface, an agent or a model between the apply that
-    saved a choice and this one; each is skipped with a warning rather than
-    written blind -- a replay degrades loudly, never quietly -- and the saved
-    file keeps the preference for a build that offers it again.
+    A build can retire a surface between the apply that saved a choice and
+    this one; it is skipped with a warning rather than written blind -- a
+    replay degrades loudly, never quietly -- and the saved file keeps the
+    preference for a build that offers it again. A retired agent or model is
+    `subagent-models`' own to skip, and its report says so.
     """
     active = selection.active()
     selected, options = list(active.patches), active.options
@@ -84,41 +83,7 @@ def _for_build(selection: cache.Selection, source: Source) -> tuple[list[str], O
             raise ValueError(
                 "saved custom models need an endpoint; set one in the menu"
             )
-    if options.subagent_models:
-        valid, dropped = _valid_models(
-            options.subagent_models, source, model_names(options.custom_models)
-        )
-        options.subagent_models = valid
-        if dropped:
-            warn(
-                "saved model override(s) not valid for this build, skipped: "
-                + ", ".join(dropped)
-            )
-        if not valid and "subagent-models" in selected:
-            selected.remove("subagent-models")
     return selected, options
-
-
-def _valid_models(
-    models: dict[str, str], source: Source, custom_ids: list[str]
-) -> tuple[dict[str, str], list[str]]:
-    """Split saved overrides into those this binary still accepts and the rest.
-
-    ``custom_ids`` is what this apply will really register -- the ids are
-    absent from the *pristine* source, since ``custom-models`` adds them during
-    the run that follows -- so a pin to a custom model survives exactly when
-    its model does, mirroring the menu's own check.
-    """
-    known_agents = {a.name for a in discover_agents(source)}
-    known_models = {INHERIT, *discover_models(source), *custom_ids}
-    valid: dict[str, str] = {}
-    dropped: list[str] = []
-    for agent, model in models.items():
-        if agent in known_agents and model in known_models:
-            valid[agent] = model
-        else:
-            dropped.append(f"{agent}={model}")
-    return valid, dropped
 
 
 def _print_findings(outcome: Outcome) -> None:
@@ -127,7 +92,8 @@ def _print_findings(outcome: Outcome) -> None:
         console.print(f"      [{style}]· {escape(text)}[/{style}]")
 
 
-def _print_report(report: patcher.PatchReport, options: Options) -> None:
+def _print_report(report: patcher.PatchReport) -> None:
+    options = report.options
     heading("Patch results")
     for patch, outcome in report.results:
         mark, colour = MARKS[outcome.health]
@@ -190,7 +156,7 @@ def cmd_apply(args) -> int:
         err(str(exc))
         return 1
 
-    _print_report(report, options)
+    _print_report(report)
     if report.output is not None:
         # Written back once it is really in the binary, the same rule the menu
         # follows: the file then always describes the last bake, and an id this

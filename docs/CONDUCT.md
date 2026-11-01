@@ -43,8 +43,9 @@ shape that already absorbs every case, found rather than bolted on.
   names — string literals, `case` labels, property names — and the shape of the
   tree are what a build keeps. Never describe the syntax between them, and never
   anchor on a minified local: that is the half a minifier regenerates. A new
-  upstream *shape* earns a narrow new branch; a new *spelling* of one shape
-  should already cost nothing. Full rules and the repair loop:
+  upstream *shape* is met by a weaker claim both shapes satisfy, never by a
+  branch on which one a build ships; a new *spelling* of one shape should
+  already cost nothing. Full rules and the repair loop:
   [PLAYBOOK.md](PLAYBOOK.md).
 
 - **Report absent apart from broken.** A matcher that finds nothing may be a

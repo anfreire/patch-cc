@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import __version__, locate
@@ -32,7 +32,7 @@ class AlreadyPatchedError(RuntimeError):
 
 
 def landed_ids(results: list[tuple[Patch, Outcome]]) -> list[str]:
-    """Exactly what the manifest may claim: every patch that is not broken.
+    """Exactly what the manifest may claim: every patch in the binary.
 
     A patch that rewrote something but missed an expectation is not an applied
     patch; recording it would make the manifest assert a feature that is not
@@ -40,7 +40,7 @@ def landed_ids(results: list[tuple[Patch, Outcome]]) -> list[str]:
     both build their manifests from it, so they cannot drift on what "landed"
     means.
     """
-    return [p.id for p, o in results if o.health != "broken"]
+    return [p.id for p, o in results if o.health in ("ok", "partial")]
 
 
 @dataclass(slots=True)
@@ -48,6 +48,8 @@ class PatchReport:
     version: str | None
     kind: str
     original_size: int
+    #: The options as the last pass left them -- what the manifest records.
+    options: Options
     patched_size: int = 0
     results: list[tuple[Patch, Outcome]] = field(default_factory=list)
     backup: Path | None = None
@@ -302,10 +304,12 @@ def patch_installation(
     # output, so dropping one can change what the next finds, and only a whole
     # run that comes back clean proves the set has settled. Judging the bytes of
     # the last run by the verdicts of the first is how a manifest starts lying.
+    # A patch narrows its options to what it wrote, so each run gets a fresh copy.
     patches = selected_patches(selected)
     seen: dict[str, tuple[Patch, Outcome]] = {}
     while True:
-        patched_source, results = run_patches(source.source, patches, options)
+        baked = replace(options)
+        patched_source, results = run_patches(source.source, patches, baked)
         seen.update({p.id: (p, o) for p, o in results})
         healthy = [p for p, o in results if o.health != "broken"]
         if len(healthy) == len(patches):
@@ -316,6 +320,7 @@ def patch_installation(
         version=install.version,
         kind=source.kind,
         original_size=source.binary_size,
+        options=baked,
         # Every patch reported by the last run it took part in: a dropped one
         # keeps the outcome that condemned it, a survivor the run that shipped.
         results=[seen[p.id] for p in selected_patches(list(seen))],
@@ -331,7 +336,9 @@ def patch_installation(
     # manifest's included -- left unparseable, and it is checked as the bytes it
     # will be rather than as a promise about them. Raising here leaves the install
     # and the backup untouched: nothing below this line has run yet.
-    patched_source = patched_source.append_manifest(build_manifest(landed, options))
+    patched_source = patched_source.append_manifest(
+        build_manifest(landed, report.options)
+    )
 
     # One last gate, on the exact bytes about to be written, from trees that share
     # nothing with the incremental ones every edit above was checked against.

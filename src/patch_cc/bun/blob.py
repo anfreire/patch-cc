@@ -47,6 +47,7 @@ ALIGN = 128
 #: :func:`parse`: the table is a whole number of records and every pair points
 #: into the arena, which a record of another size cannot satisfy by accident.
 RECORD = 52
+NAME = 0 * 8
 CONTENTS = 1 * 8
 BYTECODE = 3 * 8
 LOADER = RECORD - 4 + 1
@@ -64,6 +65,7 @@ class BlobError(BunError):
 @dataclass(slots=True)
 class Module:
     index: int
+    name: tuple[int, int]
     contents: tuple[int, int]
     bytecode: tuple[int, int]
     loader: int
@@ -163,6 +165,7 @@ def parse(data: bytes) -> Blob:
         modules.append(
             Module(
                 index=index,
+                name=struct.unpack_from("<II", data, base + NAME),
                 contents=struct.unpack_from("<II", data, base + CONTENTS),
                 bytecode=struct.unpack_from("<II", data, base + BYTECODE),
                 loader=data[base + LOADER],

@@ -45,6 +45,8 @@ between two names has to be stated.
 |---|---|---|
 | `source.find(name)` | where is this authored name? | substring anchors — the name is the *whole* node, so `agentType` is not `subagentType` and `spinnerTipsEnabled` is not `spinnerTipsEnabledAt` |
 | `source.literals(text)` | which strings say this? | a climb from a byte hit to the literal around it; prose is asked what it says, once per literal |
+| `source.values(node)` | what can this expression stand for? | reading a value only where it is written — a name stands for every value written to the binding it names, found by JavaScript's own scoping in its module or, through an `import`, the module exporting it; a ternary, `&&`/`\|\|`/`??`, a sequence or an assignment for each value it can answer |
+| `source.walk(node)` | what is under this value? | a subtree search, which reads a list upstream moved into a constant as gone; a name under the value counts as what it stands for, one step deep, so what that value was built from stays out |
 | `props(node)` | which properties does this object carry? | prop **order** and adjacency; `object` vs `object_pattern` (passed vs received) |
 | `parameters(fn)` / `positional(fn)` | what does this function take? | destructuring-head matchers, and their declarator-edge bounds |
 | `body(fn)` | what does this function do? | body matchers, which break when upstream grows a statement inside one |
@@ -53,6 +55,7 @@ between two names has to be stated.
 | `first(node, want)` | which node under this one is the one I mean? | a skip over a schema factory whose callee is pure noise; the array under a property's value is *chosen by what it holds*, never by being the first one there |
 | `first/every(…, scoped=True)` | what does this *scope* do, not counting the scopes inside it? | searches that read a nested function's work as the enclosing one's — a callback's `return null` taken for the arm's own, a function that merely *contains* the reducer's dispatches |
 | `visible(declarator, site)` | can this site see that binding? | position ("the render falls after the `useState`") and scope-shaped guesses; nested functions **and** blocks, in one rule |
+| `source.portable(value, site)` | does this value mean, pasted there, what it means here? | copying text a `values` search found — it can sit in a block, a function or a binding the site does not share |
 | `only(found, what)` | which one of these did upstream mean? | first-match-wins — for a rewrite there is one answer or none, and a second is a cardinality change to be told about |
 | `dispatch(case)` | where does this `switch` arm begin? | label-chain scans, and modelling the arm body |
 | `conjuncts(expr)` | is this an `&&`, and of what? | gate matchers spelled per site |
@@ -130,8 +133,8 @@ The tree removes the *mechanical* fragility. It does not decide these:
   identified as the consequence of a ternary whose alternative is `void 0` (the
   branch layout, upstream's) — finds nothing there with every anchor standing;
   `display-mode` defaults the setting's read and sees no change. Where a value
-  *must* be identified at its site, ask what it can *be* (`js.values`), never
-  which branch it sits on.
+  *must* be identified at its site, ask what it can *be* (`source.values`),
+  never which branch it sits on — or where it is declared.
 - **Match an identity by the weakest claim that still proves it; hold a rewrite
   to the exact node.** The two jobs pull in opposite directions.
   `thinking-inline`'s null-guard neutralises only a `return` that answers
@@ -193,25 +196,47 @@ because the module was the bundle:
   thousand modules, and two different sites at the same local offset are two
   sites, not one to skip.
 
-- **A minified local is scoped to its module.** Resolving one — a hoisted
-  `agentType:uu` constant read through its value — searches *its own* module
-  (`Source.find_local`), never the bundle, where `uu` binds a string in a dozen
-  unrelated chunks and `js.only` would rightly refuse to choose. Before the split
-  the module *was* the bundle, so a bundle-wide `find` was a module-wide one; the
-  two come apart only once the app is dealt across files. The rule this playbook
-  states for identifiers within a build — "a name is a spelling until its scope
-  is said" — reaches the module boundary too.
+- **A name resolves the way JavaScript resolves it.** The binding a read names
+  is the innermost declaration of it holding the read — in the read's module,
+  or, through an `import`, the declaration the exporting module names — and it
+  stands for every value written to that binding (`Source.values`). Never a
+  bundle-wide search, where `uu` binds a string in a dozen unrelated chunks; and
+  never one confined to the reading module either, because the split moves
+  constants away from their readers. From 2.1.248 the `fork` and `worker` agent
+  types are constants one chunk exports and another reads (`web-fetch` from
+  2.1.304), and 2.1.314 imports the Task tool's model aliases the same way: a
+  lookup that stopped at the module boundary read all three as gone with every
+  anchor standing — fewer agents offered with no red line anywhere, then no
+  models, reported only as `custom-models` broken over a list its routing never
+  needed. Where a value is declared is representation, as much as
+  the minifier's spelling of it is. The rule this playbook states for
+  identifiers within a build — "a name is a spelling until its scope is said" —
+  reaches the module boundary because `import` does. An `export{…}` list, the
+  form the split emits, is followed, through `from` to the module it names; an
+  exported declaration, a default or namespace import, an `export *`, and a
+  name the grammar misreads (below) are not, and the name reads as a value
+  nothing here can see.
+
+  A value found that way is valid where it stands, not wherever it is pasted.
+  A patch that copies one into another site proves it means the same there
+  (`source.portable`), and a patch that matches one against a name it holds
+  compares bindings, never spellings: an outer `n=normalize(a)` is not a
+  function's own `normalize(a)` because its parameter is also called `a`.
 
 - **The gate reads code, not linkage.** tree-sitter's JavaScript grammar does not
   model a reserved word as an import/export alias (`export{x as if}`,
   `import{if as a}` — legal ES2015, which the split minifier emits when its
   two-letter alias generator lands on `if`/`in`/`do`), so it plants a localized
-  `ERROR` inside the clause. patch-cc never locates in or edits module linkage —
-  every anchor is executable code — so `Source.defect` reads *past* an error
-  confined to an import/export statement and returns the first one that is not,
-  while a splice that broke real code still lands outside linkage and is still
-  caught. It is the gate's scope stated precisely, not a tolerance bolted on: the
-  eight such modules on 2.1.243 parse clean for every purpose the tool has.
+  `ERROR` inside the clause, beside the one specifier it misreads. patch-cc
+  reads linkage only to follow a name to the module that writes it and never
+  edits it — every anchor and every splice is executable code, and the name
+  beside such an error reads as a value nothing here can see, its neighbours as
+  written — so `Source.defect` reads *past* an error confined to an
+  import/export statement and returns the first one that is not, while a splice
+  that broke real code still lands outside linkage and is still caught. It is
+  the gate's scope stated precisely, not a tolerance bolted on: the eight such
+  modules on 2.1.243 parse clean for every purpose the tool has, and the 186
+  names their lists also hold resolve.
 
 ## Discovery instead of hardcoding
 
@@ -233,29 +258,30 @@ Anything the binary can enumerate for us, it does:
   `source:"built-in"` (`agents.discover_agents`) — membership of one object,
   so nothing is said about their order or about how much sits between them:
   an object has an end, where a scan window has to guess one. Definitions whose
-  `whenToUse` begins with `"Internal` are plumbing
-  and are not offered; an `agentType` that is a hoisted constant
-  (`agentType:Ehr` with `Ehr="worker"` elsewhere — 4 of 11 built-ins on
-  2.1.233) is read *through* its value, resolved to the single declarator that
-  binds it, because a name read through its value is still one we can write.
-  Only a type that resolves to no single string is skipped, as unreadable.
-- **Model aliases** come from the Task tool's own input schema: the array
-  reached from the `model` property whose describe-string starts
-  `Optional model override` — `agents.model_enums`, one home because
-  `custom-models` splices the chosen custom ids into the very arrays
-  `discover_models` reads back out. Every such array, since the anchor is a
-  sentence a second tool could carry too, and "every list of aliases a subagent
-  may be pinned to" answers both questions where "the first one" answers
-  neither.
+  `whenToUse` begins with `"Internal` are plumbing and are not offered. All
+  three properties are read *through* their values (`Source.values`): an
+  `agentType` that is a constant (`agentType:Ehr` with `Ehr="worker"` — 4 of 11
+  built-ins on 2.1.233, `fork` and `worker` declared in another module from
+  2.1.248) is the string the constant holds, because a name read through its
+  value is still one we can write. A type that stands for no single string is
+  not offered, and `doctor` counts it (`agents.undiscovered`) — a definition
+  nobody can name fails the check, not just shortens the menu.
+- **Model aliases** come from the Task tool's own input schema: every list of
+  nothing but strings under the `model` property whose describe-string starts
+  `Optional model override`, one the value names as much as one it spells
+  (`Source.walk`) — `agents.model_enums`, one home because `custom-models`
+  splices the chosen custom ids into the very arrays `discover_models` reads
+  back out. Every such array, since the anchor is a sentence a second tool
+  could carry too, and "every list of aliases a subagent may be pinned to"
+  answers both questions where "the first one" answers neither.
 
-A new upstream agent or model appears in the menu, in `doctor`, and in
-`apply`'s pin validation without a code change. If the enum anchor ever vanishes,
+A new upstream agent or model appears in the menu, in `doctor`, and in what
+`subagent-models` writes without a code change. If the enum ever goes unread,
 discovery offers *nothing* rather than a guessed default: `doctor` prints
-`models: inherit` alone, and a requested pin fails its required step instead of
-landing on a hardcoded triple the real bundle may not even accept. A masked
-absence is the one thing the whole report exists to prevent, so absence flows
-through the path a present-but-different name does — the same emptiness
-`custom-models`' own `enum` step already reports as broken.
+`models: inherit` alone and fails on the schema it found with no list in it,
+and no pin lands on a hardcoded triple the real bundle may not even accept. A
+masked absence is the one thing the whole report exists to prevent, so absence
+flows through the path a present-but-different name does.
 
 **Names are checked against the binary.** A typed id or alias is refused when
 the bundle in hand already answers to it (`claimed_model_names`, below), so a
@@ -377,6 +403,17 @@ landed and does ship, and dropping it would cost a working feature over a
 missing refinement. Two questions, one `Outcome.health`, neither re-deriving
 it.
 
+**Between builds, a moved line is a finding, green or not.** A new build's
+report read against the last one's — an agent gone from `agents:`, a model from
+`models:`, a count down — is owed the same root-cause answer as a red line,
+found in the bundle before anything records it as upstream's choice. 2.1.248's
+`fork` and `worker` were written down as upstream retiring them
+([the release watch](https://github.com/anfreire/patch-cc/issues/1)), which it
+had not; 2.1.304's `web-fetch` was suspected rightly and left unexplained;
+2.1.314 turned the same miss red. Discovery now counts its own misses
+(`agents.undiscovered`), so that case fails `doctor`; the rule is for every
+line nothing counts yet.
+
 ### The syntax gate
 
 Both numbers above are counts, and a count cannot tell a rewrite that landed
@@ -445,13 +482,15 @@ declared with what its absence *means* (`Outcome.declare`):
 | mark | meaning | absence is |
 |---|---|---|
 | `optional` | a shape only some builds carry | informational |
+| `owed` | a choice the selection made, on a shape only some builds carry | said on every run |
 | `required` | the patch does nothing useful without it | a regression |
 
 `Outcome.unmet()` turns a violation into a sentence (`required step
 group-routing found nothing`); `Outcome.failures()` adds any exception the
 patch raised, because a patch that threw and a patch that missed an
 expectation are the same verdict wearing different clothes; `Outcome.health`
-folds them into `ok` / `partial` / `broken`. Every surface (`apply`, `doctor`,
+folds them into `ok` / `partial` / `broken`, or `absent` when every step is
+owed and none was found. Every surface (`apply`, `doctor`,
 the menu) reads *those two* and never re-derives either — a verdict re-derived
 from counts alone can print a red cross and "all patches still match" in the
 same report. Adding a sub-step means deciding which row of the table it is in;
@@ -482,7 +521,7 @@ Four rules keep the net from having holes:
 - **Declare an expectation before the work, not inside it.** A step created only
   by its own success cannot report its own absence. This is the API's shape,
   not a discipline: `Outcome.declare` is the only way a step comes to exist
-  (up front, required and optional named apart), and `outcome.step(name)`
+  (up front, required, owed and optional named apart), and `outcome.step(name)`
   retrieves — an undeclared name raises, so a typo cannot mint a silently
   optional step. Work that is owed conditionally declares under the same
   condition it runs (`custom_models._register_context`), and a name resolved from the
@@ -500,7 +539,11 @@ whole run comes back with nothing broken, and each patch is reported by the last
 run it took part in. Judging the bytes of the final run by the verdicts of the
 first is how a manifest starts lying. The manifest is held to the same rule:
 `brand`, `suffix` and `models` are recorded only when *their* patch landed, so
-the menu can never assert a name the bundle does not contain.
+the menu can never assert a name the bundle does not contain. Each run starts
+from the caller's options, never the previous run's: `subagent-models`
+narrows its copy to the pins it wrote, the manifest and the report take the
+copy of the run that shipped (`PatchReport.options`), and a pin one run skips
+is skipped, and said, by every run after it.
 
 ## Sub-steps, and why `live-thinking` has them
 
@@ -543,9 +586,13 @@ it, so "upstream already binds it" is not a case to handle.
 
 Notes print on every run, green ones included — an early warning held back
 until something breaks arrives too late to be one. Absences are the noisy half
-(most patches lack several shapes on any build) and wait for a verdict that is
-not `ok`. Both surfaces draw the same list (`ui.findings`), so neither can lose
-a note, or the exception that broke a patch, that the other shows.
+— a shape some builds lack says nothing about this run — and wait for a verdict
+that is not `ok`, all but an `owed` step's: a choice this build cannot honour
+is said on every run, in the same one line (`not on this build: effort-limits,
+effort-cap` before 2.1.267). An absence is never a hand-written note; declare
+the step `owed`, or one cause shared by two steps prints as two sentences.
+Both surfaces draw the same list (`ui.findings`), so neither can lose a note,
+or the exception that broke a patch, that the other shows.
 
 ## Repairing a broken patch
 
@@ -574,11 +621,14 @@ a note, or the exception that broke a patch, that the other shows.
    usually a different climb, not a new anchor.
 
 4. Reproduce the location in a REPL before editing any patch. `js.Source` is
-   the whole tool, and the loop is short enough to run by hand:
+   the whole tool — read from the binary, not `clean.js`, so it keeps apart the
+   modules `source.values` resolves names across — and the loop is short enough
+   to run by hand:
 
    ```python
    from patch_cc import js
-   src = js.Source(open("clean.js", "rb").read())
+   from patch_cc.bun import container
+   src = container.read("<the binary from step 1>").source
    for node in src.find("thoughtForMs"):
        arm = js.up(node, "if_statement")
        print(node.type, js.text(arm)[:120] if arm else "(in no if)")
@@ -589,10 +639,13 @@ a note, or the exception that broke a patch, that the other shows.
    *factory*, which no `if` encloses — and `js.text` raises rather than hand
    back an empty name for a splice to be built from.
 
-   Then update the climb in the relevant `src/patch_cc/patches/*.py`. Prefer a
+   Then update the climb in the relevant `src/patch_cc/patches/*.py`. Find the
    weaker structural claim (one more `props` membership, one fewer assumption
-   about which node the edit hangs off) over a second branch; a second branch is
-   the answer only when upstream genuinely ships two shapes.
+   about which node the edit hangs off) that holds on both shapes, never a
+   second branch: a branch on which shape a build ships is a claim per shape,
+   and the next shape has none. A value moved into a name, or into another
+   module, is not a second shape: read it through (`source.values`,
+   `source.walk`) and the one rule covers both.
 
 5. Re-run `doctor` until the patch (and each expected sub-step) is green, then
    apply to a real binary and check the behaviour at runtime.
@@ -657,7 +710,8 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
   anchor being gone while `doctor` prints all three anchor strings present; on
   every build in the corpus the two rules count the same single site. The
   renderer, component and `style` are copied from the update arm rather than
-  named, so the JSX runtime this build emits is never mentioned; the line count
+  named, so the JSX runtime this build emits is never mentioned, and each only
+  where it means the same at the created row (`source.portable`); the line count
   is borrowed from the arm's own "Wrote N lines" helper, which is required
   rather than fallen back on — a count of our own would disagree with it
   (upstream drops the empty field after a trailing newline; `split` keeps it).
@@ -756,7 +810,9 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
   - **`schema`** — the settings validator's `effortLevel` enum, reached from
     the property down to the array *that carries the four levels*, so the
     schema factory in between is skipped without being described and without
-    "the first array in there" standing in for it. The array is
+    "the first array in there" standing in for it — one the value names
+    counts as under it (`Source.walk`), since moving the list into a constant
+    leaves it the same list. The array is
     confirmed by *containing* the four levels, which is what tells it from the
     twelve other `effortLevel` properties in the bundle — a set, not a
     sequence, the same rule `custom-models/validator` states outright. Asking
@@ -996,24 +1052,39 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
   reads as satisfied to any such check. What the agent runs untouched is for
   display only — `keep (computed)` where no literal says.
 
-  Every requested override is a **required step**: each one reaching this patch
-  has already been validated against the bundle by whichever surface asked for
-  it, so a pin that cannot be written is not a shape this build lacks — it is
-  the asked-for change failing, and the patch is dropped rather than shipping a
-  manifest that claims it.
+  The patch is the one judge of a pin, against the bundle it is handed — the
+  enum `custom-models` has already written into. Every pin is an **owed** step,
+  `agent=model`, made **required** the moment it resolves, as `bypass:<agent>`
+  is, and then must land. A pin naming an agent the bundle lacks or a model it
+  does not offer stays owed — said on every run, not a failure: a retired agent
+  is something this build lacks, not this patch breaking — and a run whose every
+  pin is owed is `absent`, never recorded as landed. Before the patch runs, only
+  the selection sets a pin aside (`Selection.active`: its row off, or a custom
+  model whose patch is off). Discovery decides what the menu *shows*, never what
+  the selection *keeps*, so the saved file holds an unwritten pin for a build
+  that offers it, and the menu names it in its opening notice. The patch
+  narrows its options to the pins it wrote, so the manifest records what the
+  binary carries, and the menu's "pending apply" compares it with the selection
+  less those same pins (`MenuModel.baked`) instead of reading "pending" forever.
+
+  Discovery is a read, not a rewrite, so no step counts it — one would inflate
+  `applied` and land a run that wrote nothing. `doctor` counts it instead
+  (`agents.undiscovered`) and fails on a shortfall: a type that cannot be read,
+  or one two definitions share, offers one agent short, and a Task schema with
+  no list read checks every pin against less than the build accepts.
 
   **The bypass:** one helper ignores the definition's model for a single pinned
   agent (Explore today) —
   `function f(def,main){if(def.agentType!==X.agentType||def.source!=="built-in")return def.model;…;return g(main)?PIN:"inherit"}`.
-  Its **guard** identifies it and names the pinned agent (resolved by following
-  `X` back to the definition assigned to it) — as a comparison of two nodes,
-  never as the phrase `.source!=="built-in"`, which also asserts which side
-  upstream writes the string on and would read `"built-in"!==e.source` as no
-  helper at all. Following `X` back has one right answer or none, too: two
-  definitions held under one minified name are two, and taking the first would
-  map the bypass to the wrong agent, leave the real override inert, and fire no
-  note because a bypass *was* found. Its **body** is what gets
-  replaced, and upstream keeps growing it — 2.1.217 inserted a
+  Its **guard** identifies it and names the pinned agent (`X` read through to
+  the definition it stands for, wherever that is declared) — as a comparison of
+  two nodes, never as the phrase `.source!=="built-in"`, which also asserts
+  which side upstream writes the string on and would read
+  `"built-in"!==e.source` as no helper at all. Reading `X` through has one right
+  answer or none, too: a name that can hold two definitions is two answers,
+  and taking the first would map the bypass to the wrong agent, leave the real
+  override inert, and fire no note because a bypass *was* found. Its **body**
+  is what gets replaced, and upstream keeps growing it — 2.1.217 inserted a
   `CLAUDE_CODE_DISABLE_EXPLORE_INHERIT_CAP` escape hatch in the middle, which
   silently costs every Explore override to a matcher that spells the body. The
   body is a node, so there is nothing to skip. Resolving the agent from the
@@ -1038,7 +1109,7 @@ discovery live in `src/patch_cc/custom_models.py`; the patch consumes a
 
 | step | what it changes | identity |
 |---|---|---|
-| `enum`* | ids and aliases in the subagent model enum | Task tool's model schema |
+| `enum` | ids and aliases in the subagent model enum | Task tool's model schema |
 | `validator`* | known-model arrays | membership of the built-in aliases |
 | `resolver`* | managed override resolver | built-in switch whose default can reject an id |
 | `general-resolver`* | explicitly configured `/model` aliases | built-in switch with no rejection of its own |
@@ -1062,8 +1133,13 @@ context when an explicit window is configured.
 The two classic predicates and credential isolation are always required. A
 missing locator cannot remove its own requirement. A build without Message
 Threads reports stateless absent, and a build without the capability override
-reports effort-limits absent with a note: an advisory restriction never costs
-the routing. A drifted locator on a build that has either is still a failure.
+reports effort-limits absent — `owed`, so on a green run too: an advisory
+restriction never costs the routing. A drifted locator on a build that has either is still a failure.
+The `enum` is optional for the same reason — it serves the subagent pins, not
+the routing — and is counted per Task schema, so a schema whose list goes
+unread leaves the patch partial and a pin to a custom id refused, never the
+endpoint unreachable. Required, it let 2.1.314's move of that list into an
+imported constant drop the whole patch, routing and all.
 
 **Reuse the native per-model predicates.** The capability environment override
 was added only in 2.1.267, while mid-conversation system messages predate it.
@@ -1145,13 +1221,13 @@ as a twin of the cut: the user's own lower cap still wins, `max` exempts, a
 model declaring no level keeps the control off rather than a cap, and the
 message a clamped pick gets — "set by your settings" — is then true.
 Identity: a member read of `maxEffortLevel` inside a function that also reads
-`modelSettings` in its own scope, and the list that function walks — a
-`for ... of` over a list literal bound in that scope. The settings
+`modelSettings` in its own scope, and the list that function walks — what a
+`for ... of` in that scope walks, read through to the list literal it stands
+for, in place or named (`Source.values`). The settings
 normaliser reads the same pair of names but walks `Object.entries` of one
 settings object, no list of its own, so it claims nothing. Witness: the
 settings schema's own `modelSettings` entry carrying `maxEffortLevel`;
-2.1.257's carries only `effortLevel`, so the step reports absent there, with
-a note.
+2.1.257's carries only `effortLevel`, so the step reports absent there.
 
 **Registration still precedes subagent overrides.** The enum populated here is
 the one `subagent-models` reads, so a dropped registration takes its pins down
@@ -1280,8 +1356,10 @@ menu too.
   (CONDUCT): the patch declares its surface (`Patch.absence`, answered by the
   same `_org_segments` its candidates count off, so the two cannot disagree),
   and every surface derives its answer from the bundle in hand — the menu
-  leaves the row out, `apply` skips a saved selection of it with the sentence
-  as a warning, and `doctor` prints a `-` row apart from ✓/✗ and stays green.
+  leaves the row out and names it when it opens, `apply` skips a saved
+  selection of it with the sentence as a warning, both keep it saved for a
+  build that offers it, and `doctor` prints a `-` row apart from ✓/✗ and stays
+  green.
   Nothing is keyed on a version, so a build that composes the segment again
   offers the row with no code change. What absence cannot tell apart is a
   composition respelled out of the locator's sight — that build would read as

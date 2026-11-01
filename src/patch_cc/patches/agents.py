@@ -152,7 +152,7 @@ INHERIT = "inherit"
 _AGENT_TYPE = "agentType"
 _WHEN_TO_USE = "whenToUse"
 _SOURCE = "source"
-_BUILT_IN = '"built-in"'
+_BUILT_IN = "built-in"
 _MODEL = "model"
 
 #: The Task tool's own describe-string. The enum it introduces is the list of
@@ -178,137 +178,72 @@ class BuiltinAgent:
     #: -- an object literal takes a new property before any existing one -- and
     #: this one is required to be present for the definition to count at all.
     anchor: js.Node
-    #: The variable this definition is assigned to, when it is assigned to one.
-    #: The model-bypass helper names its pinned agent that way.
-    holder: str | None
+    definition: js.Node
 
 
-def _holder(definition: js.Node) -> str | None:
-    """The variable a definition object is assigned to, if any."""
-    parent = definition.parent
-    if parent is None:
-        return None
-    if parent.type == "assignment_expression":
-        left = parent.child_by_field_name("left")
-        return js.text(left) if left is not None and left.type == "identifier" else None
-    if parent.type == "variable_declarator":
-        name = parent.child_by_field_name("name")
-        return js.text(name) if name is not None and name.type == "identifier" else None
-    return None
+def _spelled(source: Source, node: js.Node | None) -> str | None:
+    """The one string ``node`` can stand for, else ``None``."""
+    spelled = {
+        js.text(value)[1:-1] if value.type == "string" else None
+        for value in source.values(node)
+    }
+    return spelled.pop() if len(spelled) == 1 else None
 
 
-def _resolved_name(source: Source, value: js.Node) -> str | None:
-    """The agent name an ``agentType`` value spells -- through its value node.
-
-    A string literal is its own name. An identifier is a *hoisted constant*
-    (``agentType:Ehr`` with ``Ehr="worker"`` declared elsewhere -- upstream does
-    this to 4 of 11 built-ins on 2.1.233, ``fork``/``claude-code-guide``/
-    ``web-fetch``/``worker``), and it is resolved to the single declarator that
-    binds it to a string. That is the mirror of :func:`_holder`, which walks the
-    other way -- a definition to the variable holding it -- and it is what makes
-    the skip an honest one: a name read through its value is a name we can still
-    *write*, and ``name`` is only used to offer the agent (the edit hangs off
-    ``anchor``/``entry``), so nothing about the rewrite changes.
-
-    The declarator is looked for in the constant's *own module*
-    (:meth:`js.Source.find_local`): a minified local is only unique there, and
-    since 2.1.242 the bundle is many modules, so the same two letters bind a
-    string in a dozen unrelated chunks. Before the split the module was the whole
-    bundle and the distinction did not exist.
-
-    ``None`` is ordinary absence -- a computed or otherwise unreadable type, the
-    answer a literal-only read gives every constant. Two declarators for one
-    identifier is not absence but ambiguity, and :func:`js.only` makes it loud
-    rather than picking one, the same cardinality rule every rewrite here
-    follows.
-    """
-    if value.type == "string":
-        return js.text(value)[1:-1]
-    if value.type != "identifier":
-        return None
-    name = js.text(value)
-    binding = js.only(
-        [
-            declarator
-            for node in source.find_local(value, name)
-            if node.type == "identifier"
-            and (declarator := node.parent) is not None
-            and declarator.type == "variable_declarator"
-            and declarator.child_by_field_name("name") == node
-            and (bound := declarator.child_by_field_name("value")) is not None
-            and bound.type == "string"
-        ],
-        f"declarations binding {name!r} to a string",
-    )
-    if binding is None:
-        return None
-    return js.text(binding.child_by_field_name("value"))[1:-1]
-
-
-def _default(model: js.Node | None) -> str:
+def _default(source: Source, model: js.Node | None) -> str:
     """What a ``model`` value runs; an absent one is ``undefined``, run as inherit."""
     shown = (
         js.text(value)[1:-1] if value.type == "string" else "computed"
-        for value in js.values(model)
+        for value in source.values(model)
     )
     return "/".join(dict.fromkeys(shown)) or INHERIT
 
 
-def discover_agents(source: Source) -> list[BuiltinAgent]:
-    """Built-in agent definitions as they exist in *this* bundle.
+def _definitions(source: Source) -> list[tuple[js.Node, dict[str, js.Node]]]:
+    """Every built-in agent definition a user may choose, with its properties.
 
     A definition is an object carrying all three of the properties that make
     one, and nothing is said about their order or about how much text sits
     between them: an object has an end, where a scan window has to guess one.
 
-    Definitions marked internal (their ``whenToUse`` says so) are not offered:
+    Definitions marked internal (their ``whenToUse`` says so) are left out:
     they are orchestration plumbing, not agents a user chooses.
     """
-    agents: list[BuiltinAgent] = []
-    seen: set[str] = set()
+    found = []
     for node in source.find(_AGENT_TYPE):
-        pair = js.named(node)
-        if pair is None:
-            continue
-        definition = js.owner(pair)
-        if definition is None:
-            continue
+        definition = js.owner(js.named(node))
         carried = js.props(definition)
-        kind, when, origin = (
-            carried.get(_AGENT_TYPE),
-            carried.get(_WHEN_TO_USE),
-            carried.get(_SOURCE),
-        )
-        if when is None or origin is None or js.text(origin) != _BUILT_IN:
+        when = carried.get(_WHEN_TO_USE)
+        if (
+            definition is not None
+            and when is not None
+            and _spelled(source, carried.get(_SOURCE)) == _BUILT_IN
+            and not (_spelled(source, when) or "").startswith("Internal")
+        ):
+            found.append((definition, carried))
+    return found
+
+
+def discover_agents(source: Source) -> list[BuiltinAgent]:
+    """Built-in agent definitions as they exist in *this* bundle, by name."""
+    agents: dict[str, BuiltinAgent] = {}
+    for definition, carried in _definitions(source):
+        name = _spelled(source, carried.get(_AGENT_TYPE))
+        if name is None or name in agents:
             continue
-        # The type is a string literal on most definitions and a hoisted constant
-        # on the rest; :func:`_resolved_name` reads it through its value either
-        # way, so a name upstream lifted into a variable is still offered rather
-        # than silently dropped. Only a type that resolves to no single string --
-        # genuinely unreadable, and so unwritable -- is skipped.
-        name = _resolved_name(source, kind) if kind is not None else None
-        if name is None:
-            continue
-        if when.type == "string" and js.text(when)[1:-1].startswith("Internal"):
-            continue
-        if name in seen:
-            continue
-        seen.add(name)
         model = carried.get(_MODEL)
-        agents.append(
-            BuiltinAgent(
-                name=name,
-                default=_default(model),
-                entry=None if model is None else js.entry(model),
-                anchor=js.entry(when),
-                holder=_holder(definition),
-            )
+        agents[name] = BuiltinAgent(
+            name=name,
+            default=_default(source, model),
+            entry=None if model is None else js.entry(model),
+            anchor=js.entry(carried[_WHEN_TO_USE]),
+            definition=definition,
         )
-    return agents
+    return list(agents.values())
 
 
-def model_enums(source: Source) -> list[js.Node]:
-    """The Task tool's ``model`` enum arrays -- the aliases a subagent accepts.
+def model_enums(source: Source) -> list[list[js.Node]]:
+    """The Task tool's ``model`` enum arrays, one list per schema.
 
     Reached from the describe-string through the property it belongs to, so
     whatever expression this build uses to build the schema is skipped without
@@ -336,17 +271,17 @@ def model_enums(source: Source) -> list[js.Node]:
     found = []
     for described in source.literals(MODEL_DESCRIPTION):
         pair = js.up(described, "pair")
-        if pair is None:
+        key = None if pair is None else pair.child_by_field_name("key")
+        if pair is None or key is None or js.text(key) != _MODEL:
             continue
-        key = pair.child_by_field_name("key")
-        if key is None or js.text(key) != _MODEL:
-            continue
-        found += [
-            enum
-            for enum in js.every(pair.child_by_field_name("value"), js.of_type("array"))
-            if (aliases := js.elements(enum))
+        enums = {
+            enum.id: enum
+            for enum in source.walk(pair.child_by_field_name("value"))
+            if enum.type == "array"
+            and (aliases := js.elements(enum))
             and all(alias.type == "string" for alias in aliases)
-        ]
+        }
+        found.append(list(enums.values()))
     return found
 
 
@@ -356,18 +291,37 @@ def discover_models(source: Source) -> list[str]:
     Empty when the Task-tool schema anchor is gone, and deliberately not backed
     by a guessed default. A hardcoded fallback (`haiku/sonnet/opus`) would read
     a lost enum as those three: `doctor` prints a plausible list, every pin to
-    one of them lands, and a pin to a name the real bundle accepts is refused --
-    the same emptiness that `custom-models`' own required `enum` step reports
-    as broken in the same run. With nothing to offer, the offer is empty:
-    `discover_models` returns `[]`, `doctor` shows `models: inherit` alone, and a
-    requested pin fails its required step rather than landing on a name nothing
-    registered. Absence flows through the path a present-but-different name does.
+    one of them lands, and a pin to a name the real bundle accepts is refused.
+    With nothing to offer, the offer is empty: `discover_models` returns `[]`,
+    `doctor` shows `models: inherit` alone and fails on the schema it could not
+    read (:func:`undiscovered`), and no pin lands on a name nothing registered.
+    Absence flows through the path a present-but-different name does.
     """
     return list(
         dict.fromkeys(
-            alias for enum in model_enums(source) for alias in js.strings(enum)
+            alias
+            for enums in model_enums(source)
+            for enum in enums
+            for alias in js.strings(enum)
         )
     )
+
+
+def undiscovered(source: Source) -> list[str]:
+    """What discovery found and could not read, as the menu's shortfall.
+
+    No rewrite counts it: an unread definition is an agent nobody can pin, and
+    an unread schema a list no pin is checked against. `doctor` fails on it.
+    """
+    missed = []
+    offered, found = len(discover_agents(source)), len(_definitions(source))
+    if offered < found:
+        missed.append(f"agents: {offered} of {found} built-in definitions offered")
+    schemas = model_enums(source)
+    if not schemas or not all(schemas):
+        read = sum(map(bool, schemas))
+        missed.append(f"models: {read} of {len(schemas)} Task schemas read")
+    return missed
 
 
 # --------------------------------------------------------- model overrides
@@ -399,7 +353,9 @@ def _origin_test(literal: js.Node) -> str | None:
     return None if read is None or literal not in sides else js.text(js.receiver(read))
 
 
-def _pinned_agent(condition: js.Node | None, subject: str) -> str | None:
+def _pinned_agent(
+    source: Source, condition: js.Node | None, subject: str
+) -> js.Node | None:
     """The *other* definition the guard names -- the agent this helper pins.
 
     The guard compares the definition it was handed (``subject``) against a
@@ -410,16 +366,13 @@ def _pinned_agent(condition: js.Node | None, subject: str) -> str | None:
     A guard naming two others pins two agents, which this cannot express and so
     refuses rather than picks from.
     """
-    return js.only(
-        sorted(
-            {
-                js.text(js.receiver(read))
-                for read in js.every(condition, lambda n: js.reads(n, _AGENT_TYPE))
-                if js.text(js.receiver(read)) != subject
-            }
-        ),
-        "agents this bypass guard pins",
-    )
+    pinned = {
+        value.id: value
+        for read in js.every(condition, lambda n: js.reads(n, _AGENT_TYPE))
+        if js.text(receiver := js.receiver(read)) != subject
+        for value in source.values(receiver)
+    }
+    return js.only(list(pinned.values()), "agents this bypass guard pins")
 
 
 def bypassed_agents(source: Source, agents: list[BuiltinAgent]) -> list[Bypass]:
@@ -443,31 +396,24 @@ def bypassed_agents(source: Source, agents: list[BuiltinAgent]) -> list[Bypass]:
     test -- would read as no helper being there at all.
 
     Which agent a local stands for is likewise a question with one right
-    answer or none: two definitions held under one minified name are two
-    answers, and taking the first would map the bypass to the wrong agent,
-    leave the real override inert, and fire no note because a bypass *was*
-    found.
+    answer or none: a name that can hold two definitions is two answers, and
+    taking the first would map the bypass to the wrong agent, leave the real
+    override inert, and fire no note because a bypass *was* found.
     """
-    holders: dict[str, list[BuiltinAgent]] = {}
-    for agent in agents:
-        if agent.holder:
-            holders.setdefault(agent.holder, []).append(agent)
-
+    by_definition = {agent.definition.id: agent for agent in agents}
     found: list[Bypass] = []
-    for literal in source.find(_BUILT_IN):
+    for literal in source.find(f'"{_BUILT_IN}"'):
         subject = _origin_test(literal)
         helper = js.climb(literal, lambda n: n.type in js.FUNCTIONS)
         block = js.body(helper)
         guard = js.up(literal, "if_statement")
         if subject is None or block is None or guard is None or guard.parent != block:
             continue
-        pinned = _pinned_agent(guard.child_by_field_name("condition"), subject)
-        if pinned is None:
+        pinned = _pinned_agent(source, guard.child_by_field_name("condition"), subject)
+        agent = None if pinned is None else by_definition.get(pinned.id)
+        if agent is None:
             continue
-        held = js.only(holders.get(pinned, []), f"definitions held by {pinned}")
-        if held is None:
-            continue
-        found.append(Bypass(agent=held.name, body=block, definition=subject))
+        found.append(Bypass(agent=agent.name, body=block, definition=subject))
     return found
 
 
@@ -488,34 +434,32 @@ def _subagent_models(source: Source, options: Options, outcome: Outcome) -> Sour
     # written into this very enum by the time we run (see patches/__init__.py).
     # Asking the bundle rather than the options is what ties a pin to its
     # registration: a custom-models the fixpoint dropped leaves no alias here,
-    # so the pin fails with it instead of landing on a model nothing registered.
+    # so the pin is skipped with it instead of landing on a model nothing
+    # registered.
     offered = {INHERIT, *discover_models(source)}
     agents = discover_agents(source)
     found = {agent.name: agent for agent in agents}
     edits: list[Edit] = []
 
-    # Required: every override reaching a patch has already been validated
-    # against this bundle by its surface (`apply` or the menu), so
-    # one that cannot be written is not a shape this build lacks -- it is the
-    # asked-for change failing. Left optional, the patch would stay green, the
-    # binary ship without the override, and the manifest claim it.
-    outcome.declare(required=tuple(sorted(options.subagent_models)))
+    written: dict[str, str] = {}
     for name, target in sorted(options.subagent_models.items()):
-        step = outcome.step(name)
-        if target not in offered:
-            step.note(f"model {target!r} not offered by this bundle; skipped")
-            continue
+        pin = f"{name}={target}"
+        outcome.declare(owed=(pin,))
         agent = found.get(name)
-        if agent is None:
-            step.note(f"no built-in agent {name!r} in this bundle; skipped")
+        if agent is None or target not in offered:
             continue
 
+        outcome.declare(required=(pin,))
+        step = outcome.step(pin)
         step.candidates += 1
         step.applied += 1
         if agent.entry is None:
             edits.append(Edit.before(agent.anchor, f'{_MODEL}:"{target}",'))
         else:
             edits.append(Edit.replace(agent.entry, f'{_MODEL}:"{target}"'))
+        written[name] = target
+    # The manifest records these options: what was written, never what was asked.
+    options.subagent_models = written
 
     bypasses = bypassed_agents(source, agents)
     if not bypasses:
@@ -530,7 +474,7 @@ def _subagent_models(source: Source, options: Options, outcome: Outcome) -> Sour
             "its override is inert"
         )
     for bypass in bypasses:
-        if bypass.agent not in options.subagent_models:
+        if bypass.agent not in written:
             continue
         # Declared the moment the guard resolves the agent's name -- the
         # earliest this step *can* exist -- while a vanished guard stays the

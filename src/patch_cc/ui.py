@@ -21,7 +21,12 @@ _stderr = Console(stderr=True)
 
 #: Glyph and colour per :attr:`Outcome.health`, so the CLI and the menu render
 #: the same verdict identically.
-MARKS = {"ok": ("✓", "green"), "partial": ("~", "yellow"), "broken": ("✗", "red")}
+MARKS = {
+    "ok": ("✓", "green"),
+    "partial": ("~", "yellow"),
+    "broken": ("✗", "red"),
+    "absent": ("-", "dim"),
+}
 
 
 def findings(outcome: Outcome) -> list[tuple[str, str]]:
@@ -32,16 +37,22 @@ def findings(outcome: Outcome) -> list[tuple[str, str]]:
     shows -- which is where an early warning goes to die.
 
     Notes always appear, green runs included: a warning withheld until
-    something breaks can only ever arrive late. Absences are the noisy half
-    (most patches lack several shapes on any build), so they wait for a verdict
-    that is not ``ok``.
+    something breaks can only ever arrive late. Absences are the noisy half --
+    a shape some builds lack says nothing about this run -- so they wait for a
+    verdict that is not ``ok``, all but an owed step's: a choice this build
+    cannot honour is said on every run.
     """
     lines = [("red", reason) for reason in outcome.failures()]
     lines += [
         ("yellow", f"sub-step matched but not applied: {name}")
         for name in outcome.missed_steps()
     ]
-    if outcome.health != "ok" and (absent := outcome.absent_steps()):
+    absent = [
+        name
+        for name in outcome.absent_steps()
+        if outcome.health != "ok" or outcome.steps[name].owed
+    ]
+    if absent:
         lines.append(("dim", f"not on this build: {', '.join(absent)}"))
     notes = (*outcome.notes, *(n for s in outcome.steps.values() for n in s.notes))
     return lines + [("dim", note) for note in notes]
@@ -84,6 +95,9 @@ def verdicts(result: DryRun, smoke: Smoke | None = None) -> list[tuple[str, str]
         )
     if not result.broken and result.defect is None and result.unhealthy:
         lines.append(("yellow", f"{len(result.unhealthy)} patch(es) {_drift}"))
+    if result.undiscovered:
+        lines.append(("yellow", "discovery fell short; the menu offers less:"))
+        lines += [("red", f"  {missed}") for missed in result.undiscovered]
     for patch, why in result.absent:
         lines.append(("dim", f"{patch.id}: {why}"))
     if smoke is not None and smoke.ok:
@@ -123,10 +137,10 @@ def applied_value(patch: Patch, outcome: Outcome, options: Options) -> str | Non
     from the binary (the patcher re-runs without it) yet keeps its outcome in
     the report, so echoing its value would assert a feature the bundle does not
     carry -- the very "did it bake?" signal this line exists to keep honest.
-    (``health`` is ``broken`` whenever nothing landed too, so no separate
-    "applied something" test is needed.)
+    (Nothing landed is ``broken`` or ``absent``, so no separate "applied
+    something" test is needed.)
     """
-    if outcome.health == "broken":
+    if outcome.health not in ("ok", "partial"):
         return None
     if patch.id == "branding":
         return options.brand

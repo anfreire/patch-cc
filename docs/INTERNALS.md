@@ -140,8 +140,11 @@ or a thousand through the same code.
 
 The entrypoint still matters for one thing: it is where the manifest lives and
 what the menu and `apply` read, named by the offsets struct's `entry_point_id` — the same
-index Bun resolves it by. Its *name* is upstream's to change and we never read
+index Bun resolves it by. Its *name* is upstream's to change and never chooses
 it: 2.1.229 renamed it `/$bunfs/root/src/entrypoints/cli.js` → `/$bunfs/root/cli`.
+Module names are read for one thing only, the thing they are for: following an
+`import` to the module it names, so a value one chunk declares and another
+reads resolves as if both were one.
 
 ## The bytecode, and why we unlink it
 
@@ -230,8 +233,9 @@ fixed shape.
 That line is why the menu can name exactly what is applied: several patches
 are value flips (`verbose:!0`) that leave no other trace. A comment can't
 collide with code and travels with the bundle through extract/repack. The
-menu compares the manifest with the saved selection for its "pending apply",
-and both the menu and `apply` seed from it while nothing has been saved. The
+menu compares the manifest with what the saved selection would bake on this
+build for its "pending apply", and both the menu and `apply` seed from it
+while nothing has been saved. The
 manifest remains the record of what is applied.
 
 Custom models are recorded in the same shape in the manifest and the

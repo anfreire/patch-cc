@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from dataclasses import replace
 
 from .. import js
@@ -59,9 +58,9 @@ def _append_strings(array: js.Node, names: list[str]) -> tuple[Edit, ...]:
 
 
 def _register(
-    source: Source, arrays: list[js.Node], names: list[str], step: Outcome
+    source: Source, witnessed: list[list[js.Node]], names: list[str], step: Outcome
 ) -> Source:
-    """Add these names to every array of the kind, and say so once per array.
+    """Add these names to every array of the kind, and say so once per witness.
 
     Registration is a fact about a *set* -- these names belong in every list of
     the kind this bundle keeps -- so it neither has to know which list upstream
@@ -73,13 +72,15 @@ def _register(
     `subagent-models` say: the step is judged on what it achieved, and an
     upstream that ships the name itself has achieved it.
     """
-    edits: list[Edit] = []
-    for array in arrays:
+    edits: dict[int, tuple[Edit, ...]] = {}
+    for arrays in witnessed:
         step.candidates += 1
-        added = _append_strings(array, names)
-        step.applied += bool(added) or set(names) <= set(js.strings(array))
-        edits += added
-    return source.apply(edits)
+        for array in arrays:
+            edits.setdefault(array.id, _append_strings(array, names))
+        step.applied += bool(arrays) and all(
+            edits[array.id] or set(names) <= set(js.strings(array)) for array in arrays
+        )
+    return source.apply([edit for added in edits.values() for edit in added])
 
 
 def _validators(source: Source) -> list[js.Node]:
@@ -114,7 +115,8 @@ def claimed_model_names(source: Source) -> set[str]:
     once more to refuse rather than to write.
     """
     names: set[str] = set()
-    for array in (*_validators(source), *model_enums(source)):
+    enums = [enum for schema in model_enums(source) for enum in schema]
+    for array in (*_validators(source), *enums):
         names |= set(js.strings(array))
     table = _model_table(source)
     for entry in js.elements(table) if table is not None else []:
@@ -558,7 +560,7 @@ def _capability_gate(source: Source, capability: str) -> js.Node | None:
     """The native per-model predicate querying a canonical model's capability.
 
     Registry rows and error recognizers carry the same literal. The predicate
-    queries it with a local model obtained by normalizing its own first argument.
+    queries it with the model obtained by normalizing its own first argument.
     This identity holds before and after upstream added capability env overrides.
     """
     found = {}
@@ -568,34 +570,20 @@ def _capability_gate(source: Source, capability: str) -> js.Node | None:
             continue
         call = args_node.parent
         args = js.arguments(call)
-        if len(args) < 2 or args[1] != node or args[0].type != "identifier":
+        if len(args) < 2 or args[1] != node:
             continue
         fn = js.up(call, *js.FUNCTIONS)
         params = js.positional(fn)
         body = js.body(fn)
         if fn is None or not params or body is None or body.type != "statement_block":
             continue
-        first_param = js.text(js.binding(params[0]))
-
-        def normalizes(
-            n: js.Node,
-            expected: str = js.text(args[0]),
-            parameter: str = first_param,
-            scope: js.Node = body,
-        ) -> bool:
-            return (
-                n.type == "variable_declarator"
-                and (name := n.child_by_field_name("name")) is not None
-                and js.text(name) == expected
-                and (value := n.child_by_field_name("value")) is not None
-                and value.type == "call_expression"
-                and len(js.arguments(value)) == 1
-                and js.text(js.arguments(value)[0]) == parameter
-                and js.visible(n, scope)
-            )
-
-        normalizers = js.every(body, normalizes, scoped=True)
-        if normalizers:
+        parameter = js.binding(params[0])
+        if any(
+            model.type == "call_expression"
+            and len(js.arguments(model)) == 1
+            and parameter in source.values(js.arguments(model)[0])
+            for model in source.values(args[0])
+        ):
             found[fn.id] = fn
     return js.only(list(found.values()), f"{capability} model predicates")
 
@@ -643,13 +631,9 @@ def _effort_limits(source: Source, options: Options, outcome: Outcome) -> Source
         return source
     outcome.declare(
         required=("effort-limits",) if source.count(_CAPABILITIES) else (),
-        optional=("effort-limits",),
+        owed=("effort-limits",),
     )
     step = outcome.step("effort-limits")
-    if not step.expect:
-        outcome.note(
-            "this build has no per-model capability override; effort limits skipped"
-        )
     reads = [
         node.parent
         for node in source.find(_CAPABILITIES)
@@ -690,15 +674,6 @@ def _caps_per_model(source: Source) -> bool:
     )
 
 
-def _binds_list(name: str) -> Callable[[js.Node], bool]:
-    return lambda n: (
-        n.type == "variable_declarator"
-        and js.text(n.child_by_field_name("name")) == name
-        and (value := n.child_by_field_name("value")) is not None
-        and value.type == "array"
-    )
-
-
 def _cap_layers(source: Source) -> js.Node | None:
     found: dict[int, js.Node] = {}
     for node in source.find(_MAX_EFFORT):
@@ -708,13 +683,9 @@ def _cap_layers(source: Source) -> js.Node | None:
         if js.first(body, lambda n: js.reads(n, _MODEL_SETTINGS), scoped=True) is None:
             continue
         for loop in js.every(body, js.of_type("for_in_statement"), scoped=True):
-            walked = loop.child_by_field_name("right")
-            if walked is None or walked.type != "identifier":
-                continue
-            for declarator in js.every(body, _binds_list(js.text(walked)), scoped=True):
-                value = declarator.child_by_field_name("value")
-                if value is not None and js.visible(declarator, loop):
-                    found[declarator.id] = value
+            for walked in source.values(loop.child_by_field_name("right")):
+                if walked.type == "array":
+                    found[walked.id] = walked
     return js.only(list(found.values()), "effort cap settings lists")
 
 
@@ -729,15 +700,11 @@ def _effort_caps(source: Source, options: Options, outcome: Outcome) -> Source:
         return source
     outcome.declare(
         required=("effort-cap",) if _caps_per_model(source) else (),
-        optional=("effort-cap",),
+        owed=("effort-cap",),
     )
     step = outcome.step("effort-cap")
     entries = js.elements(_cap_layers(source))
     if not entries:
-        if not step.expect:
-            outcome.note(
-                "this build has no per-model effort cap; the effort pickers are not cut"
-            )
         return source
     step.candidates += 1
     step.applied += 1
@@ -985,19 +952,18 @@ def _model_table(source: Source) -> js.Node | None:
     status line reads, and adding models to the wrong one is how they would be
     accepted everywhere and named nowhere.
     """
-    found = []
+    found: dict[int, js.Node] = {}
     for node in source.find(_ALIASES):
-        pair = js.named(node)
-        if pair is None:
-            continue
-        table = js.owner(pair)
-        array = js.props(table).get(_MODELS) if table is not None else None
-        if array is None or array.type != "array":
-            continue
-        first = next(iter(js.elements(array)), None)
-        if first is not None and js.carries(first, *_REGISTRY_FIELDS):
-            found.append(array)
-    return js.only(found, "model tables")
+        table = js.owner(js.named(node))
+        for array in source.values(js.props(table).get(_MODELS)):
+            first = next(iter(js.elements(array)), None)
+            if (
+                array.type == "array"
+                and first is not None
+                and js.carries(first, *_REGISTRY_FIELDS)
+            ):
+                found[array.id] = array
+    return js.only(list(found.values()), "model tables")
 
 
 def _register_registry(source: Source, models, step: Outcome) -> Source:
@@ -1047,14 +1013,13 @@ def _custom_models(source: Source, options: Options, outcome: Outcome) -> Source
     # itself where its own work is owed (see _register_context).
     outcome.declare(
         required=(
-            "enum",
             "validator",
             "resolver",
             *(("general-resolver",) if shorts else ()),
             "redirect",
             "credential",
         ),
-        optional=("picker", "registry"),
+        optional=("enum", "picker", "registry"),
     )
     source = _register(
         source,
@@ -1064,7 +1029,7 @@ def _custom_models(source: Source, options: Options, outcome: Outcome) -> Source
     )
     source = _register(
         source,
-        _validators(source),
+        [[validator] for validator in _validators(source)],
         model_ids + list(shorts),
         outcome.step("validator"),
     )

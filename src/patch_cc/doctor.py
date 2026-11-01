@@ -28,7 +28,13 @@ from .bun.errors import BunError
 from .custom_models import CustomModel
 from .patcher import build_manifest, landed_ids, read_manifest
 from .patches import ALL_PATCHES, Options, Outcome, Patch
-from .patches.agents import INHERIT, BuiltinAgent, discover_agents, discover_models
+from .patches.agents import (
+    INHERIT,
+    BuiltinAgent,
+    discover_agents,
+    discover_models,
+    undiscovered,
+)
 
 
 @dataclass(slots=True)
@@ -67,6 +73,8 @@ class DryRun:
     #: override patch would offer.
     agents: list[BuiltinAgent] = field(default_factory=list)
     models: list[str] = field(default_factory=list)
+    #: What discovery found and could not read (:func:`undiscovered`).
+    undiscovered: list[str] = field(default_factory=list)
     #: Patches with no surface on this build -- upstream retired the target --
     #: each with the sentence saying so (:meth:`patch_cc.patches.Patch.absent`).
     #: Kept apart from ``results`` because absence is a fact about the build,
@@ -121,7 +129,7 @@ class DryRun:
 
     @property
     def clean(self) -> bool:
-        """The one green verdict: every patch fully ``ok`` *and* the bundle parses.
+        """The one green verdict: every patch ``ok``, discovery whole, it parses.
 
         The single home for the dry-run exit code, so no surface can disagree
         about it. Read in two places -- :attr:`broken` alone on one, :attr:`unhealthy`
@@ -129,7 +137,7 @@ class DryRun:
         or unparseable build would show green ticks and exit 0 on one surface
         and red on the other.
         """
-        return not self.unhealthy and self.defect is None
+        return not self.unhealthy and self.defect is None and not self.undiscovered
 
 
 def _synthetic_options(agents: list[BuiltinAgent], models: list[str]) -> Options:
@@ -187,6 +195,7 @@ def dryrun(bundle: Bundle) -> DryRun:
     result = DryRun(
         agents=discover_agents(source),
         models=[INHERIT, *discover_models(source)],
+        undiscovered=undiscovered(source),
         defect=source.defect(),
     )
     options = _synthetic_options(result.agents, result.models)

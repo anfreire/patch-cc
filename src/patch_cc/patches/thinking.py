@@ -486,16 +486,21 @@ def _max_effort(source: Source, _options: Options, outcome: Outcome) -> Source:
         # upstream reshuffle or one more level is a spelling of the same array,
         # and demanding the exact list made both read as the whole
         # persisted-settings schema having vanished.
-        levels = js.first(
-            pair.child_by_field_name("value"),
-            lambda n: n.type == "array" and set(_LEVELS) <= set(js.strings(n)),
+        levels = next(
+            (
+                n
+                for n in source.walk(pair.child_by_field_name("value"))
+                if n.type == "array" and set(_LEVELS) <= set(js.strings(n))
+            ),
+            None,
         )
         if levels is None:
             continue
         schema.candidates += 1
         schema.applied += 1
-        if _MAX in js.strings(levels):
+        if levels.id in seen or _MAX in js.strings(levels):
             continue
+        seen.add(levels.id)
         edits.append(Edit.after(js.elements(levels)[-1], f',"{_MAX}"'))
 
     return source.apply(edits)

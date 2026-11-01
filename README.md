@@ -76,9 +76,10 @@ uvx --no-cache patch-cc restore   # put the original back
 
 `apply` takes no flags: it bakes exactly what the menu would open on — your
 saved selection, else what the installed binary already records, else the
-default set — and says what this build cannot honour before it writes.
-Agents and models are checked against what your installed binary actually
-ships, and custom model ids against Claude's own names. The saved selection
+default set — and says what this build cannot honour. Agents and models are
+checked against what your installed binary actually ships (a pin it does not
+offer is skipped and stays saved for a build that does), and custom model ids
+against Claude's own names. The saved selection
 is a readable file (`~/.cache/patch-cc/selection.json`, under
 `$XDG_CACHE_HOME` when set) if you ever want to script it.
 
