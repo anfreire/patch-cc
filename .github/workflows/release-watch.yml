@@ -1,25 +1,8 @@
 name: Release watch
 
-# Fires the "patch-cc release watch" cloud routine the moment Anthropic ships a
-# new Claude Code build, instead of leaving it to the routine's own daily cron.
-#
-# The routine already knows how to decide whether anything moved -- it compares
-# the upstream version and the checkout HEAD against the ledger in issue #1 and
-# exits silently when neither did. Its schedule was never the interesting part;
-# it was just a poll, once a day, which meant a release that broke a patch could
-# sit unnoticed for up to 24 hours. This workflow moves the poll here, where a
-# tick is one curl instead of a cloud session, and only wakes the routine when
-# the version actually changes.
-#
-# The routine keeps its daily schedule as a backstop: if this workflow breaks or
-# GitHub skips the schedule, the watch degrades to its old once-a-day behaviour
-# rather than going silent. That is why a failed poll below is a warning and not
-# a red run -- a flaky fetch must not page anyone.
-#
-# SETUP (one time, by hand -- there is no API for token creation):
-#   claude.ai/code/routines -> "patch-cc release watch" -> pencil icon
-#   -> Add another trigger -> API -> Generate token (shown once)
-#   -> store it as the repo secret ROUTINE_FIRE_TOKEN.
+# Runs `patch-cc doctor` on each Claude Code build as it ships. A build that
+# passes is appended to docs/corpus.md on main; the first that fails gets an
+# issue with doctor's report, and the watch waits until that issue is closed.
 
 on:
   schedule:
@@ -33,132 +16,95 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
-  issues: read
+  contents: write
+  issues: write
 
 env:
-  # The channel file the Claude Code installer itself reads -- the same source
-  # the routine treats as authoritative, so the two never disagree about what
-  # "the current release" means.
-  CHANNEL_URL: https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/latest
-  # Not a secret: firing needs the bearer token, and that is one.
-  ROUTINE_ID: trig_01WrgxdCZahJEHD3NNYcetqS
-  LEDGER_ISSUE: "1"
+  # The installer's release channel, as scripts/corpus.py reads it.
+  CHANNEL: https://downloads.claude.ai/claude-code-releases/latest
 
 jobs:
   watch:
     runs-on: ubuntu-latest
     steps:
-      - name: Read the release channel
-        id: upstream
-        run: |
-          set -uo pipefail
-          if ! v=$(curl -fsSL --max-time 30 --retry 3 --retry-delay 5 "$CHANNEL_URL"); then
-            echo "::warning::could not reach the release channel; skipping this tick"
-            echo "skip=1" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          v=$(printf '%s' "$v" | tr -d '[:space:]')
-          case "$v" in
-            [0-9]*.[0-9]*.[0-9]*) ;;
-            *)
-              echo "::warning::channel returned something that is not a version: '$v'"
-              echo "skip=1" >> "$GITHUB_OUTPUT"
-              exit 0
-              ;;
-          esac
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "upstream: $v"
+      - uses: actions/checkout@v4
 
-      # First guard: did an earlier tick already fire for this version? The
-      # routine takes several minutes to run (it downloads a ~275 MB bundle), so
-      # without this every tick during that window would fire it again.
-      - name: Already fired for this version?
-        id: marker
-        if: steps.upstream.outputs.skip != '1'
-        uses: actions/cache/restore@v4
-        with:
-          path: .fired
-          key: fired-${{ steps.upstream.outputs.version }}
-          lookup-only: true
-
-      # Second guard, and the authoritative one: the ledger records the version
-      # the routine has actually finished processing. This is what catches the
-      # case where the cache entry was evicted but the work is long done.
-      - name: Read the ledger's last-version
-        id: ledger
-        if: steps.upstream.outputs.skip != '1' && steps.marker.outputs.cache-hit != 'true'
+      - name: Has a build shipped past the table?
+        id: due
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -uo pipefail
-          if ! body=$(gh issue view "$LEDGER_ISSUE" --repo "$GITHUB_REPOSITORY" --json body -q .body); then
-            echo "::warning::could not read the ledger; skipping this tick rather than guessing"
-            echo "skip=1" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          # Warnings, not failures: a failed run notifies, and a flaky read is not news.
+          if ! head=$(curl -fsSL --max-time 30 --retry 3 --retry-delay 5 "$CHANNEL"); then
+            echo "::warning::could not reach the release channel"
             exit 0
           fi
-          last=$(printf '%s\n' "$body" | sed -n 's/^last-version:[[:space:]]*//p' | head -1 | tr -d '[:space:]')
-          echo "last=$last" >> "$GITHUB_OUTPUT"
-          echo "ledger: $last"
+          head=$(printf '%s' "$head" | tr -d '[:space:]')
+          if ! [[ $head =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::warning::the release channel answered '$head', not a version"
+            exit 0
+          fi
+          last=$(grep -oE '^\| `[0-9]+\.[0-9]+\.[0-9]+`' docs/corpus.md | tr -d '|` ' | sort -V | tail -1)
+          if [ "$(printf '%s\n' "$head" "$last" | sort -V | tail -1)" = "$last" ]; then
+            echo "the channel is at $head and the table ends at $last"
+            exit 0
+          fi
+          if ! open=$(gh issue list --repo "$GITHUB_REPOSITORY" --author 'github-actions[bot]' --state open --json number --jq '.[0].number // empty'); then
+            echo "::warning::could not read the open issues"
+            exit 0
+          fi
+          if [ -n "$open" ]; then
+            echo "the channel is at $head, past $last, and #$open is open"
+            exit 0
+          fi
+          IFS=. read -r major minor patch <<< "$last"
+          echo "since=$major.$minor.$((patch + 1))" | tee -a "$GITHUB_OUTPUT"
 
-      - name: Fire the routine
-        id: fire
-        if: >-
-          steps.upstream.outputs.skip != '1' &&
-          steps.marker.outputs.cache-hit != 'true' &&
-          steps.ledger.outputs.skip != '1' &&
-          steps.ledger.outputs.last != steps.upstream.outputs.version
+      - if: steps.due.outputs.since
+        uses: astral-sh/setup-uv@v6
+
+      - name: Fetch, test and record each build
+        id: test
+        if: steps.due.outputs.since
         env:
-          TOKEN: ${{ secrets.ROUTINE_FIRE_TOKEN }}
-          VERSION: ${{ steps.upstream.outputs.version }}
-          LAST: ${{ steps.ledger.outputs.last }}
+          SINCE: ${{ steps.due.outputs.since }}
         run: |
-          set -uo pipefail
-          if [ -z "${TOKEN:-}" ]; then
-            echo "::error::ROUTINE_FIRE_TOKEN is not set -- see the setup note at the top of this file"
-            exit 1
-          fi
-          body=$(printf 'Claude Code %s is on the release channel; the ledger last recorded %s. This line is a hint for the run log only -- re-derive the version yourself from the channel, per your step 2.' "$VERSION" "${LAST:-(none)}")
-          payload=$(jq -nc --arg t "$body" '{text: $t}')
-          out=$(mktemp)
-          code=$(curl -sS -o "$out" -w '%{http_code}' -X POST \
-            "https://api.anthropic.com/v1/claude_code/routines/$ROUTINE_ID/fire" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "anthropic-version: 2023-06-01" \
-            -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
-            -H "Content-Type: application/json" \
-            -d "$payload") || code=000
-          echo "HTTP $code"
-          cat "$out"
-          echo
-          if [ "$code" != "200" ]; then
-            # Deliberately not marking the version as fired, so the next tick
-            # retries. A 429 here just means the daily run cap was reached.
-            echo "::error::fire failed with HTTP $code"
-            exit 1
-          fi
-          echo "url=$(jq -r '.claude_code_session_url // empty' "$out")" >> "$GITHUB_OUTPUT"
-          : > .fired
-
-      # Only reached on a 200, so the marker never claims a fire that failed.
-      - name: Mark this version as fired
-        if: steps.fire.outcome == 'success'
-        uses: actions/cache/save@v4
-        with:
-          path: .fired
-          key: fired-${{ steps.upstream.outputs.version }}
-
-      - name: Summary
-        if: always()
-        run: |
-          {
-            echo "### Release watch"
-            echo
-            echo "- upstream: \`${{ steps.upstream.outputs.version || 'unreadable' }}\`"
-            echo "- ledger last-version: \`${{ steps.ledger.outputs.last || 'not read' }}\`"
-            if [ -n "${{ steps.fire.outputs.url }}" ]; then
-              echo "- **fired the routine** -> ${{ steps.fire.outputs.url }}"
-            else
-              echo "- no fire (nothing moved, or already fired for this version)"
+          set -euo pipefail
+          uv run scripts/corpus.py sync --since "$SINCE"
+          corpus=$(uv run python -c 'from patch_cc.patcher import backup_dir; print(backup_dir())')
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          shopt -s nullglob
+          for build in $(printf '%s\n' "$corpus"/*.orig | sort -V); do
+            version=$(basename "$build" .orig)
+            if ! uv run patch-cc doctor "$build" 2>&1 | tee "$RUNNER_TEMP/report"; then
+              echo "broken=$version" >> "$GITHUB_OUTPUT"
+              break
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+            size=$(awk -v bytes="$(stat -c %s "$build")" 'BEGIN { printf "%.0f", bytes / 1e6 }')
+            sum=$(sha256sum "$build" | cut -d' ' -f1)
+            end=$(grep -n '^| `[0-9]' docs/corpus.md | tail -1 | cut -d: -f1)
+            sed -i "${end}a | \`$version\` | $size MB | \`$sum\` |" docs/corpus.md
+            git commit -qm "docs(corpus): add $version" docs/corpus.md
+          done
+          git push || { git pull -q --rebase && git push; }
+
+      - name: Report the build doctor fails on
+        if: steps.test.outputs.broken
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.test.outputs.broken }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          {
+            echo "\`patch-cc doctor\` fails on Claude Code $VERSION at $GITHUB_SHA ([run]($RUN_URL)):"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/report"
+            echo '```'
+            echo
+            echo "The watch waits while this is open. Closing it tests again, against main as it is then."
+          } > "$RUNNER_TEMP/issue.md"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "Claude Code $VERSION: doctor fails" --body-file "$RUNNER_TEMP/issue.md"

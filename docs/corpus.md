@@ -25,12 +25,13 @@ where that check is written down once per build, so its hashes are the offline
 record for builds Anthropic may one day stop serving — never a second authority
 to keep in step.
 
-## On disk now
+## The builds
 
-One row per pristine binary held, appended as builds ship and never restated — so
-a hash that stops matching means the file changed under you, not that a number
-moved. A gap in the numbering is upstream's rather than a miss: not every version
-reached the release channel, and `corpus.py status` names which, so no list of
+One row per pristine binary, appended by the [release watch](../.github/workflows/release-watch.yml)
+once `doctor` passes on it, and never restated — so a hash that stops matching
+means the file changed under you, not that a number moved. A gap in the
+numbering is upstream's rather than a miss: not every version reached the
+release channel, and `corpus.py status` names which, so no list of
 them is kept here to go stale. The set straddles the **2.1.242 code split**
 (INTERNALS.md): `2.1.242`/`2.1.243` are the first many-module builds, and they
 jump ~35 MB over `2.1.241` for it. Sizes repeat across builds, which is why the

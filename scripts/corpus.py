@@ -47,12 +47,8 @@ from pathlib import Path
 from patch_cc.patcher import backup_dir
 
 #: Where releases live. The installer's own base URL (``claude.ai/install.sh``),
-#: which is the contract Anthropic publishes for anyone downloading a build. The
-#: GCS bucket behind it is an implementation detail that
-#: ``.github/workflows/release-watch.yml`` reaches for directly, and deliberately
-#: keeps its own spelling of: that workflow never checks the repo out -- a tick
-#: there is one curl, every ten minutes -- so sharing this string would cost it a
-#: clone to save a line.
+#: which is the contract Anthropic publishes for anyone downloading a build, and
+#: the one ``.github/workflows/release-watch.yml`` polls for ``latest``.
 CHANNEL = "https://downloads.claude.ai/claude-code-releases"
 
 #: Transports, most compressed first. Purely a bandwidth choice -- 76 MB against
