@@ -134,6 +134,7 @@ never the size:
 | `2.1.314` | 298 MB | `4487042b4c4f5d88d4568f68ae98aae0b1ffae58864cf57fb868641bc5f84594` |
 | `2.1.315` | 328 MB | `a3b9d66caf61b40d6aad99ed4de80f48f17e0e024ddf1b6e4289efade06105df` |
 | `2.1.316` | 328 MB | `fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824` |
+| `2.1.317` | 331 MB | `eb224419e344575faa4a1f39b290b649425a10cd5ee2ef1d003480cd9ae57eb0` |
 
 This set covers the span the playbook's tree-move measurements were taken over
 (`2.1.210` → `2.1.233`), the 2.1.242 split, the 2.1.246 stream-store
