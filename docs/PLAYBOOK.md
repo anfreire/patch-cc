@@ -98,8 +98,8 @@ The tree removes the *mechanical* fragility. It does not decide these:
 - **Identity is still yours to prove.** A name locates; membership, or what a
   function does with its argument, is what says you found the right one. `model:`
   plus an array occurs 12 times; the Task tool's describe-string is what picks
-  the one that matters. Weak identity is now the only way to match the wrong
-  node.
+  the one that matters. Weak identity is now the only way to match — or count —
+  the wrong node.
 - **Narrow, not broad.** `branding` renames the product's *name badge*, and the
   bundle is full of bold prose that merely contains the words — including
   sentences that would end up in a system prompt. Rewriting "every string that
@@ -112,9 +112,8 @@ The tree removes the *mechanical* fragility. It does not decide these:
   arm's own channels — decide that, don't assume it.
 - **Reuse upstream's own expression where there is one.** `thinking-inline`
   routes a thinking entry down the loop's existing "not grouped" path by copying
-  that branch verbatim rather than constructing a flush call; `org-label` builds
-  its line from upstream's own no-org string, so nothing here spells the
-  separator. What you copy cannot drift from what you copied it from.
+  that branch verbatim rather than constructing a flush call. What you copy
+  cannot drift from what you copied it from.
 - **Ride what upstream ships working** ([CONDUCT](CONDUCT.md)). Here it decides
   how many claims a patch makes: data put on a path upstream already runs owes
   the bundle one identity, the point where that path is fed, where a twin of
@@ -373,20 +372,19 @@ apart, so `Outcome.health` reads them off `applied < candidates` rather than off
 
 Both zero-rows are verdicts, not commentary: a rewrite has *landed* only when it
 found something **and** changed something (`Outcome.landed`). Reading `applied`
-alone is a hole exactly the size of the two patches that pay for a second,
-durable witness — `thinking-summaries` counts off the header name behind the
-read, `org-label` off the interpolation behind the conditional — so a renamed
-`x-cc-atis` would leave every read rewritten, nothing left to rewrite them
-*for*, and a green tick.
+alone is a hole exactly the size of the patch that pays for a second, durable
+witness — `thinking-summaries` counts off the header name behind the read — so
+a renamed `x-cc-atis` would leave every read rewritten, nothing left to rewrite
+them *for*, and a green tick.
 
 Where the two numbers come from one place, they move together and the second
 row above cannot fire; it is worth knowing which patches those are, because for
 them `candidates` is a restatement rather than a witness. The row earns its keep
-exactly where a patch pays for a witness the rewrite does not produce: the two
+exactly where a patch pays for a witness the rewrite does not produce: the one
 above, and `custom-models`' registrations (a name already present is landed
 without an edit). A witness that disagrees with its own rewrite reads as
 `candidates == 0, applied == 1` — a state the table has no meaning for, and a
-defect in the witness rather than in the build (see `org-label`).
+defect in the witness rather than in the build.
 
 `doctor` prints the documented anchor counts for any broken patch, so a `0`
 next to an anchor points straight at what moved.
@@ -1309,60 +1307,3 @@ menu too.
   `badge` is required; see [Expectations](#expectations--why-a-green-tick-means-something).
   On by default, deriving `<username>'s Code`; the menu's name field
   names it explicitly.
-- **`org-label`** — replace or hide the welcome screen's third segment
-  (`model · plan · <organizationName>`; for a personal claude.ai account the
-  org name *is* the account email). Anchor: the one conditional whose true branch
-  interpolates `.organizationName` into a template and whose false branch does
-  not — that false branch is upstream's own no-org line, and the replacement is
-  **built from it**: taken verbatim to hide the segment, or with one more
-  segment appended to bake a label. The separator that introduces that segment
-  is *copied out of the line itself* — the bytes between its last two
-  interpolations — so nothing here spells the separator, the model or the plan,
-  and a build that renames either interpolation, writes `\xB7` as a raw `·`, or
-  changes the separator outright, changes nothing. Spelling it would put ours
-  beside theirs the moment the two differ: a build using `/` would bake
-  `` `${model} / ${plan} \xB7 Ada` ``, half its punctuation and half ours.
-  `IS_DEMO` is the node found inside the condition, never a path spelled out
-  (`process.env.IS_DEMO` through 2.1.227, `J.IS_DEMO` on 2.1.228, `Q.IS_DEMO`
-  on 2.1.229) — a spelled path dies at 2.1.228. The `!{read}&&` prefix is consumed,
-  not left standing: `&&` binds tighter than `?:`, so upstream's expression is
-  `` (!demo && hasOrg) ? withOrg : noOrg `` — which means its demo value is the
-  *no-org string*, not `false`, and replacing only the ternary would leave
-  `` !{read}&&`template` `` and make demo mode evaluate to `false`. A label is
-  therefore `` !{read}?baked:no-org ``, measured to reproduce upstream's demo
-  output exactly. An empty label (the menu's label field emptied — empty is the
-  *value* "hide", not
-  "unset") emits that false branch verbatim, so the separator leaves with the
-  segment; a label takes the org text's place, escaped for the template
-  literal it lands in. Candidates count off the org name **interpolated into a
-  template** — the composition, found as the node it is rather than as text, so
-  the `/status` row `{label:"Organization",value:r.organizationName}` is not
-  mistaken for one. A reshaped conditional then reads as
-  `candidates > 0, applied == 0` — something to repair — rather than the zero
-  that would equally mean upstream retired the segment. Being *in* a
-  substitution is the whole claim; ending one is a claim about how the
-  substitution closes, and `${x.organizationName??""}` — the same composition,
-  one defensive operator later — would then report the one state the table
-  above has no row for: `candidates == 0, applied == 1`, the anchor "gone" and
-  the rewrite landed. Only this line is
-  touched: the `/status` Organization/Email rows, the login screen, and the
-  org's startup message (`"Message from <org>:"`) still show the real account.
-
-  **2.1.246 retired the surface.** Upstream deleted the welcome-banner variant
-  that composed the segment; the surviving banner draws `model · billing` with
-  no org anywhere — the hidden state an empty org label asks for, now
-  upstream's own default. That is a semantic change, not a matcher to repair,
-  and it is *absence*, reported apart from broken
-  (CONDUCT): the patch declares its surface (`Patch.absence`, answered by the
-  same `_org_segments` its candidates count off, so the two cannot disagree),
-  and every surface derives its answer from the bundle in hand — the menu
-  leaves the row out and names it when it opens, `apply` skips a saved
-  selection of it with the sentence as a warning, both keep it saved for a
-  build that offers it, and `doctor` prints a `-` row apart from ✓/✗ and stays
-  green.
-  Nothing is keyed on a version, so a build that composes the segment again
-  offers the row with no code change. What absence cannot tell apart is a
-  composition respelled out of the locator's sight — that build would read as
-  absent, the row missing from a menu whose binary still draws the segment —
-  and the sweep over the corpus, where thirty-four builds carry the surface, is
-  what keeps the locator honest.

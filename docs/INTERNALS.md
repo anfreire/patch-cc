@@ -124,8 +124,8 @@ The entrypoint is now a ~20 KB shim that parses argv and lazily
 `import()`s the app across the `/$bunfs/root/chunk-*.js` modules; ~36 MB of
 JS on 2.1.243, the largest chunk 7.3 MB. The code did not disappear — every
 anchor is still in the binary — but it left the entrypoint, and it does not
-concentrate in a single chunk (`branding` spans a dozen modules, `org-label` ten,
-`spinner-tips` six).
+concentrate in a single chunk (`branding` spans a dozen modules, `spinner-tips`
+six).
 
 So the patchable surface is **every module the container declares to be
 JavaScript**, discovered the way the entrypoint itself is discovered — off the
@@ -219,7 +219,7 @@ means for matcher health:
 //patch-cc {"v":1,"tool":"<version>","patches":[...],
             "custom_models":{"endpoint":"http://127.0.0.1:8317",
              "models":[{"id":"qwen3-coder","name":"","context":256000,"efforts":[]}]},
-            "subagent_models":{...},"suffix":...,"brand":...,"org_label":...}
+            "subagent_models":{...},"suffix":...,"brand":...}
 ```
 
 Every key after `patches` is a configurable patch's own, declared in one place

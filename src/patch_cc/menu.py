@@ -157,8 +157,6 @@ class MenuModel:
     agents: list[BuiltinAgent]
     models: list[str]
     patch_rows: dict[str, PatchRow] = field(default_factory=dict)
-    #: Saved patches this build has no surface for, kept for a build that does.
-    kept_patches: list[str] = field(default_factory=list)
     #: The saved subagent pins as edited here, those this build cannot take too.
     pins: dict[str, str] = field(default_factory=dict)
     text_rows: dict[str, TextRow] = field(default_factory=dict)
@@ -196,28 +194,17 @@ class MenuModel:
         model.pins = dict(seed.options.subagent_models)
         for group in GROUP_ORDER:
             for patch in by_group().get(group, []):
-                # A patch this build has no surface for gets no row at all: what
-                # the binary cannot support is not offered, and a build that
-                # carries the surface again shows the row by itself.
-                if patch.absent(pristine.source) is None:
-                    model.patch_rows[patch.id] = PatchRow(
-                        patch, patch.id in seed.patches
-                    )
-        model.kept_patches = [p for p in seed.patches if p not in model.patch_rows]
+                model.patch_rows[patch.id] = PatchRow(patch, patch.id in seed.patches)
 
         brand = seed.options.brand
         model.text_rows["brand"] = TextRow("brand", "name", brand)
         model.text_rows["suffix"] = TextRow(
             "suffix", "marker", seed.options.version_suffix
         )
-        model.text_rows["org"] = TextRow("org", "label", seed.options.org_label)
 
         asked = model.selection().active().options.subagent_models
         shown = model.shown()
-        kept = [
-            *model.kept_patches,
-            *(f"{a}={m}" for a, m in asked.items() if a not in shown),
-        ]
+        kept = [f"{a}={m}" for a, m in asked.items() if a not in shown]
         unoffered = {
             "Saved patches this patch-cc does not have are left out, and "
             "applying drops them from the file": seed.dropped_patches,
@@ -231,11 +218,7 @@ class MenuModel:
     def rows(self) -> list[Row]:
         rows: list[Row] = []
         for group in GROUP_ORDER:
-            offered = [
-                self.patch_rows[patch.id]
-                for patch in by_group().get(group, [])
-                if patch.id in self.patch_rows
-            ]
+            offered = [self.patch_rows[patch.id] for patch in by_group().get(group, [])]
             if offered:
                 rows.append(HeaderRow(group))
                 rows.extend(offered)
@@ -257,7 +240,7 @@ class MenuModel:
         return len(self.baked().options.subagent_models)
 
     def applied_ids(self) -> set[str]:
-        """What the binary claims, limited to what this build offers.
+        """What the binary claims, limited to the patches this tool has.
 
         A manifest can name a patch this tool has no row for; counting it would
         leave the selection differing from the binary forever -- a permanent
@@ -268,29 +251,22 @@ class MenuModel:
     # -- what apply would do
 
     def selection(self) -> cache.Selection:
-        """All preferences; :meth:`active` derives what the binary should receive."""
+        """All preferences; Selection.active derives what the binary should receive."""
         options = Options(
             brand=self.text_rows["brand"].value.strip() or derived_brand(),
             version_suffix=self.text_rows["suffix"].value.strip() or DEFAULT_SUFFIX,
-            org_label=self.text_rows["org"].value.strip(),
             subagent_models=dict(self.pins),
             custom_models=list(self.custom_models),
             endpoint=self.endpoint,
         )
         rows = [pid for pid, row in self.patch_rows.items() if row.on]
-        return cache.Selection([*rows, *self.kept_patches], options)
-
-    def active(self, selection: cache.Selection) -> cache.Selection:
-        """What applying hands the patches: Selection.active, less the kept patches."""
-        active = selection.active()
-        active.patches = [p for p in active.patches if p not in self.kept_patches]
-        return active
+        return cache.Selection(rows, options)
 
     def baked(self) -> cache.Selection:
         """The selection as applying would record it on this build."""
         selection = self.selection()
         selection.options.subagent_models = self.shown()
-        return self.active(selection)
+        return selection.active()
 
 
 # ----------------------------------------------------------------- modals
@@ -817,11 +793,7 @@ class MenuApp:
     def _activate(self, row: PatchRow) -> None:
         """Enter on a patch: toggle plain ones, configure configurable ones."""
         patch_id = row.patch.id
-        text_keys = {
-            "branding": "brand",
-            "version-marker": "suffix",
-            "org-label": "org",
-        }
+        text_keys = {"branding": "brand", "version-marker": "suffix"}
         if patch_id == "subagent-models":
             if not self.model.agents:
                 self.flash = "no agents discovered in this bundle"
@@ -928,22 +900,12 @@ class MenuApp:
 
     def _open_text_modal(self, key: str) -> None:
         row = self.model.text_rows[key]
-        titles = {
-            "brand": "Startup name",
-            "suffix": "--version marker",
-            "org": "Org/email label (empty hides it)",
-        }
+        titles = {"brand": "Startup name", "suffix": "--version marker"}
 
         def entered(value: object) -> None:
-            # For the org label an emptied field is the point -- it means hide
-            # the segment -- where an empty brand or marker means "never mind".
-            if isinstance(value, str) and (value.strip() or key == "org"):
+            if isinstance(value, str) and value.strip():
                 row.value = value.strip()
-                patch_id = {
-                    "brand": "branding",
-                    "suffix": "version-marker",
-                    "org": "org-label",
-                }[key]
+                patch_id = {"brand": "branding", "suffix": "version-marker"}[key]
                 self.model.patch_rows[patch_id].on = (
                     key != "brand" or row.value != DEFAULT_BRAND
                 )
@@ -1067,7 +1029,7 @@ class MenuApp:
         )
 
     def _open_key(self) -> None:
-        """One masked field, like the org label: emptied, it means keyless."""
+        """One masked field: emptied, it means keyless."""
         try:
             key = self._endpoint_key()
         except ValueError as exc:
@@ -1447,7 +1409,7 @@ class MenuApp:
                 self._open_custom_menu(row)
                 return
         selection = self.model.selection()
-        count = len(self.model.active(selection).patches)
+        count = len(selection.active().patches)
         if not count:
             self._confirm_restore()
             return
@@ -1472,7 +1434,7 @@ class MenuApp:
     def _apply(
         self, selection: cache.Selection
     ) -> tuple[patcher.PatchReport, Status | None, str]:
-        active = self.model.active(selection)
+        active = selection.active()
         report = patcher.patch_installation(
             self.model.install,
             active.patches,
@@ -1856,9 +1818,6 @@ class MenuApp:
             return Text(model.text_rows["brand"].value, style=_VALUE)
         if row.patch.id == "version-marker":
             return Text(model.text_rows["suffix"].value, style=_VALUE)
-        if row.patch.id == "org-label":
-            value = model.text_rows["org"].value
-            return Text(value, style=_VALUE) if value else Text("hidden", style="dim")
         if row.patch.id == "custom-models":
             count = len(model.custom_models)
             if not count:
@@ -1955,14 +1914,6 @@ class MenuApp:
             )
             lines.append(line)
             lines += _findings(outcome)
-        for patch, _why in result.absent:
-            # Not a verdict: the build has no surface for this patch, so it was
-            # not run. The sentence itself prints with the verdicts below.
-            line = Text()
-            line.append("  - ", style="dim")
-            line.append(f"{patch.id:<22}", style="dim")
-            line.append("not on this build", style="dim")
-            lines.append(line)
         lines.append(Text(""))
         lines.append(
             Text(f"  agents  {', '.join(a.name for a in result.agents)}", style="dim")

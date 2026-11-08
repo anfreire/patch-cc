@@ -98,14 +98,10 @@ def verdicts(result: DryRun, smoke: Smoke | None = None) -> list[tuple[str, str]
     if result.undiscovered:
         lines.append(("yellow", "discovery fell short; the menu offers less:"))
         lines += [("red", f"  {missed}") for missed in result.undiscovered]
-    for patch, why in result.absent:
-        lines.append(("dim", f"{patch.id}: {why}"))
     if smoke is not None and smoke.ok:
         lines.append(("dim", smoke.detail))
     if result.clean:
         matched = "all patches still match this build"
-        if result.absent:
-            matched += f" ({len(result.absent)} not on it)"
         tail = (
             ", it parses, and the baked binary runs."
             if smoke is not None and smoke.ok
@@ -146,8 +142,6 @@ def applied_value(patch: Patch, outcome: Outcome, options: Options) -> str | Non
         return options.brand
     if patch.id == "version-marker":
         return options.version_suffix
-    if patch.id == "org-label":
-        return options.org_label or "hidden"
     if patch.id == "subagent-models" and options.subagent_models:
         return ", ".join(f"{a}={m}" for a, m in options.subagent_models.items())
     if patch.id == "custom-models" and options.custom_models:

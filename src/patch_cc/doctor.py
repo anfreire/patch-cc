@@ -75,13 +75,6 @@ class DryRun:
     models: list[str] = field(default_factory=list)
     #: What discovery found and could not read (:func:`undiscovered`).
     undiscovered: list[str] = field(default_factory=list)
-    #: Patches with no surface on this build -- upstream retired the target --
-    #: each with the sentence saying so (:meth:`patch_cc.patches.Patch.absent`).
-    #: Kept apart from ``results`` because absence is a fact about the build,
-    #: reported apart from broken (docs/CONDUCT.md): an absent patch is not run
-    #: at all, exactly as the menu does not offer it, so it can neither pass nor
-    #: fail and never decides :attr:`clean`.
-    absent: list[tuple[Patch, str]] = field(default_factory=list)
     #: Where this build's *pristine* bundle stopped parsing, when it did --
     #: which `apply` refuses to patch at all. A rewrite that produces rubble is
     #: already reported as the patch that produced it, so this is the one
@@ -167,9 +160,6 @@ def _synthetic_options(agents: list[BuiltinAgent], models: list[str]) -> Options
         subagent_models=overrides,
         custom_models=custom,
         endpoint="http://127.0.0.1:8317",
-        # The replace branch; the hidden form differs only in the emitted tail,
-        # so one configuration holds the whole matcher in the net.
-        org_label="patch-cc doctor",
     )
 
 
@@ -202,9 +192,6 @@ def dryrun(bundle: Bundle) -> DryRun:
 
     current = source
     for patch in ALL_PATCHES:
-        if (why := patch.absent(source)) is not None:
-            result.absent.append((patch, why))
-            continue
         current, outcome = patch.run(current, options)
         result.results.append((patch, outcome))
         if patch.anchors:

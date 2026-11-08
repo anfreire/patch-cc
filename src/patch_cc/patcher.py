@@ -102,9 +102,7 @@ def manifest_payload(landed: list[str], options: Options) -> dict:
     # of `patch.id ==` here that could drift from the cache's spelling. A value
     # is recorded only when its patch landed *and* there is one worth recording
     # (`recorded`): a brand at the default, or no override, leaves no key -- so
-    # the manifest can never assert a name the bundle does not carry. `org-label`'s
-    # `recorded` is always true, because an empty org label is the real value
-    # "hide the segment", not the absence of a choice.
+    # the manifest can never assert a name the bundle does not carry.
     for patch in ALL_PATCHES:
         setting = patch.setting
         if setting is not None and patch.id in applied and setting.recorded(options):

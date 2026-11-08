@@ -50,8 +50,7 @@ def _saved(installed: Bundle) -> cache.Selection:
     if selection.dropped_patches:
         # A replay that quietly applies a smaller set than was saved is the one
         # thing a replay must never be. The file is readable and the user's to
-        # edit, so it can name an id this tool does not have -- said here, once,
-        # the way a retired surface is said below.
+        # edit, so it can name an id this tool does not have -- said here, once.
         warn(
             "saved selection names patch id(s) this patch-cc does not have, "
             "skipped: " + ", ".join(selection.dropped_patches)
@@ -60,20 +59,13 @@ def _saved(installed: Bundle) -> cache.Selection:
 
 
 def _for_build(selection: cache.Selection, source: Source) -> tuple[list[str], Options]:
-    """The patch input, with a surface this build lacks said and skipped.
+    """The patch input for this build.
 
-    A build can retire a surface between the apply that saved a choice and
-    this one; it is skipped with a warning rather than written blind -- a
-    replay degrades loudly, never quietly -- and the saved file keeps the
-    preference for a build that offers it again. A retired agent or model is
-    `subagent-models`' own to skip, and its report says so.
+    A retired agent or model is `subagent-models`' own to skip, and its report
+    says so.
     """
     active = selection.active()
-    selected, options = list(active.patches), active.options
-    for patch in patcher.selected_patches(selected):
-        if (why := patch.absent(source)) is not None:
-            warn(f"saved {patch.id} skipped -- {why}")
-            selected.remove(patch.id)
+    selected, options = active.patches, active.options
     if "custom-models" in selected:
         # Refused at the front door, before anything is written: a saved id
         # that this (newer) binary now claims for itself would be registered
@@ -231,10 +223,6 @@ def cmd_doctor(args) -> int:
             f"cand={outcome.candidates} applied={outcome.applied}"
         )
         _print_findings(outcome)
-    for patch, _why in result.absent:
-        # Not a verdict: the build has no surface for this patch, so it was not
-        # run. The sentence itself prints with the closing verdicts (`verdicts`).
-        console.print(f"  [dim]- {patch.id:20s} not on this build[/dim]")
 
     agents = ", ".join(f"{a.name}={a.default}" for a in result.agents) or "none found"
     console.print(f"\n  [dim]agents:  {escape(agents)}[/dim]")

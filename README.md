@@ -29,7 +29,7 @@ uvx --no-cache patch-cc        # fullscreen menu, no install needed
 
 The menu is a single centered panel: move with `↑ ↓`, toggle with `space`,
 press `s` to apply. Patches that carry a setting — subagent models, custom models,
-the startup name, the `--version` marker, the org/email label — open a centered
+the startup name, the `--version` marker — open a centered
 modal on `enter`, and the row then shows what you chose. Everything choosable
 is a picker: the agent names and model aliases are **discovered from your
 binary itself** (and custom models from your endpoint, with manual entry available), so the menu can never
@@ -62,7 +62,6 @@ patch-cc                       # then just run it
 | Chrome & branding | Disable spinner tips | No rotating tips on the spinner |
 | | Mark `--version` | Appends `(patched)` — or any marker you choose |
 | | Custom startup name | Defaults to `<your username>'s Code` |
-| | Startup org/email label | Replace the org/email on the welcome screen — or hide it (demo mode keeps the stock line). Upstream stopped drawing the segment in 2.1.246, so newer builds do not offer it |
 
 ## Usage
 

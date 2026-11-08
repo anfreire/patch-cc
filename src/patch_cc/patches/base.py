@@ -71,11 +71,6 @@ class Options:
     subagent_models: dict[str, str] = field(default_factory=dict)
     custom_models: list[CustomModel] = field(default_factory=list)
     endpoint: str = ""
-    #: The welcome screen's org segment (for personal claude.ai accounts,
-    #: upstream shows the account email there). Empty is a *value* -- hide the
-    #: segment -- not "unset": whether the patch acts at all is the selection's
-    #: question, never this field's.
-    org_label: str = ""
 
     @property
     def rebrands(self) -> bool:
@@ -119,11 +114,10 @@ class Outcome:
         Both counts, one verdict, because either alone is satisfiable by a
         rewrite that achieved nothing. ``applied`` is what a matcher reports
         about itself; ``candidates`` is what the *durable* witness reports --
-        the header name behind the read, the interpolation behind the
-        conditional -- and a patch that pays for one is paying to be told when
-        the witness goes. Judged on ``applied`` alone, `thinking-summaries`
-        would stay green with its header renamed: every read rewritten, and
-        nothing left that those reads fed.
+        the header name behind the read -- and a patch that pays for one is
+        paying to be told when the witness goes. Judged on ``applied`` alone,
+        `thinking-summaries` would stay green with its header renamed: every
+        read rewritten, and nothing left that those reads fed.
         """
         return self.candidates > 0 and self.applied > 0
 
@@ -295,7 +289,7 @@ class Setting:
     """
 
     #: The key this value takes in the manifest JSON and in the cache (`brand`,
-    #: `suffix`, `org_label`, `subagent_models`, `custom_models`).
+    #: `suffix`, `subagent_models`, `custom_models`).
     key: str
     #: Is there a value worth recording? (`brand` differs from the default, the
     #: override dict is non-empty, ...) -- gates both stores.
@@ -310,19 +304,15 @@ class Setting:
     from_cache: Callable[[Options, object], None]
 
 
-def string_setting(
-    key: str, field: str, default: str, *, always: bool = False
-) -> Setting:
+def string_setting(key: str, field: str, default: str) -> Setting:
     """A :class:`Setting` for a plain string value.
 
-    Covers the three chrome settings, which differ only in their key and
-    default: ``brand``, ``version_suffix`` (``suffix``) and ``org_label``.
-    ``always`` records even the empty value -- an emptied ``org-label`` *means*
-    "hide the segment", so unlike a blank brand it is a real recorded choice.
+    Covers the two chrome settings, which differ only in their key and
+    default: ``brand`` and ``version_suffix`` (``suffix``).
     """
 
     def parse(value: object) -> str:
-        return value if isinstance(value, str) and (value or always) else default
+        return value if isinstance(value, str) and value else default
 
     def write(options: Options) -> str:
         return getattr(options, field)
@@ -332,7 +322,7 @@ def string_setting(
 
     return Setting(
         key=key,
-        recorded=lambda o: always or getattr(o, field) != default,
+        recorded=lambda o: getattr(o, field) != default,
         to_manifest=write,
         from_manifest=read,
         to_cache=write,
@@ -354,20 +344,6 @@ class Patch:
     #: keys, so the two stores cannot drift and adding a configurable patch is
     #: one declaration rather than eight edits.
     setting: Setting | None = None
-    #: Whether this patch still has a surface on a given bundle: the sentence
-    #: explaining its absence, or ``None`` while the surface is there. Discovery's
-    #: question asked one level up -- the binary in hand says what can be offered
-    #: -- for a patch whose whole target upstream may retire outright (org-label's
-    #: welcome segment left in 2.1.246). The menu leaves the row out, a saved
-    #: replay skips it with a warning, and `doctor` reports it apart from
-    #: broken: a build without the surface is a fact about the build, not a
-    #: regression in a matcher. The field left ``None`` means the surface is
-    #: every build's.
-    absence: Callable[[Source], str | None] | None = None
-
-    def absent(self, source: Source) -> str | None:
-        """Why this patch has no surface on this bundle -- ``None`` while it has one."""
-        return self.absence(source) if self.absence is not None else None
 
     def run(self, source: Source, options: Options) -> tuple[Source, Outcome]:
         """Run this patch, surviving its own failure.
