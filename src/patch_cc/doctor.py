@@ -17,9 +17,11 @@ overrides are exercised for real instead of being exempted.
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import js
@@ -208,6 +210,7 @@ class Smoke:
 
     ok: bool
     detail: str
+    pristine_failure: str | None = None
 
 
 def smoke(bundle: Bundle, dry: DryRun, timeout: float = 60.0) -> Smoke:
@@ -233,13 +236,36 @@ def smoke(bundle: Bundle, dry: DryRun, timeout: float = 60.0) -> Smoke:
     landed = landed_ids(dry.results)
     patched = dry.patched.append_manifest(build_manifest(landed, dry.options))
 
+    try:
+        failure, stdout = _launch(
+            "baked binary", lambda tmp: container.write(bundle, patched, tmp), timeout
+        )
+    except BunError as exc:
+        return Smoke(False, f"bake refused: {exc}")
+    if failure is not None:
+        pristine, _ = _launch(
+            "pristine binary", lambda tmp: shutil.copy(bundle.path, tmp), timeout
+        )
+        return Smoke(False, failure, pristine)
+    output = " · ".join(l for l in stdout.strip().splitlines() if l)
+    marker = dry.options.version_suffix
+    if "version-marker" in landed and marker not in stdout:
+        return Smoke(
+            False,
+            f"baked binary ran but never printed {marker!r} -- version-marker "
+            f"landed yet its edit did not execute: {output!r}",
+        )
+    return Smoke(True, f"baked binary runs: {output}")
+
+
+def _launch(
+    subject: str, place: Callable[[str], object], timeout: float
+) -> tuple[str | None, str]:
+    """How ``subject`` failed ``--version`` (``None`` if it ran) and what it printed."""
     fd, tmp = tempfile.mkstemp(prefix="patch-cc-smoke-")
     os.close(fd)
     try:
-        try:
-            container.write(bundle, patched, tmp)
-        except BunError as exc:
-            return Smoke(False, f"bake refused: {exc}")
+        place(tmp)
         try:
             proc = subprocess.run(
                 [tmp, "--version"],
@@ -249,14 +275,12 @@ def smoke(bundle: Bundle, dry: DryRun, timeout: float = 60.0) -> Smoke:
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            return Smoke(
-                False, f"baked binary hung: --version did not return in {timeout:.0f}s"
-            )
+            return f"{subject} hung: --version did not return in {timeout:.0f}s", ""
         except OSError as exc:
             # A temp dir mounted noexec, ENOMEM -- the run could not even start.
-            # Still a smoke verdict, not a traceback: the question was "does the
-            # baked binary run", and the honest answer is how far it got.
-            return Smoke(False, f"baked binary could not be executed: {exc}")
+            # Still a smoke verdict, not a traceback: the question was "does it
+            # run", and the honest answer is how far it got.
+            return f"{subject} could not be executed: {exc}", ""
         if proc.returncode != 0:
             reason = f"exit {proc.returncode}"
             if proc.returncode < 0:
@@ -266,20 +290,9 @@ def smoke(bundle: Bundle, dry: DryRun, timeout: float = 60.0) -> Smoke:
                     reason = f"signal {-proc.returncode}"
             noise = (proc.stderr or proc.stdout).strip().splitlines()
             cause = next((l for l in noise if "panic" in l), noise[-1] if noise else "")
-            return Smoke(
-                False,
-                f"baked binary died on --version ({reason})"
-                + (f": {cause.strip()}" if cause else ""),
-            )
-        output = " · ".join(l for l in proc.stdout.strip().splitlines() if l)
-        marker = dry.options.version_suffix
-        if "version-marker" in landed and marker not in proc.stdout:
-            return Smoke(
-                False,
-                f"baked binary ran but never printed {marker!r} -- version-marker "
-                f"landed yet its edit did not execute: {output!r}",
-            )
-        return Smoke(True, f"baked binary runs: {output}")
+            died = f"{subject} died on --version ({reason})"
+            return died + (f": {cause.strip()}" if cause else ""), ""
+        return None, proc.stdout
     finally:
         try:
             os.unlink(tmp)

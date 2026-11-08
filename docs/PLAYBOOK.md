@@ -351,8 +351,12 @@ matchers break in the patches, the run breaks in the container layer, and
 2.1.246 is the build where they split — the Bun 1.4.1 record chain and the
 shared bytecode string table (docs/INTERNALS.md) live in bytes no module owns,
 so a write that loses them has every matcher green, every module round-tripping
-byte-perfect, and the written binary `SIGSEGV`ing in Bun's graph loader. The
-temp binary is always removed; the backup under test is never written to.
+byte-perfect, and the written binary `SIGSEGV`ing in Bun's graph loader. A run
+that fails has one owner to rule out before the write: the machine. Doctor then
+runs the pristine binary the same way, and when that fails too the build does
+not run here at all, so the boot is reported untested rather than broken —
+2.1.242 and 2.1.243 segfault unpatched on Fedora 45. The temp binaries are
+always removed; the backup under test is never written to.
 
 Three readings of the two numbers, kept distinct:
 

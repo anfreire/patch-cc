@@ -115,10 +115,17 @@ def verdicts(result: DryRun, smoke: Smoke | None = None) -> list[tuple[str, str]
         lines.append(
             (
                 "yellow",
-                "the baked binary does not run; the container write is what broke:",
+                "the baked binary does not run; the container write is what broke:"
+                if smoke.pristine_failure is None
+                else "this build does not run here, patched or not; the boot is "
+                "untested:",
             )
         )
-        lines.append(("red", f"  {smoke.detail}"))
+        lines += [
+            ("red", f"  {seen}")
+            for seen in (smoke.detail, smoke.pristine_failure)
+            if seen is not None
+        ]
     return lines
 
 
