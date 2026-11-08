@@ -504,8 +504,8 @@ Four rules keep the net from having holes:
   step is the product name where you always see it. Left undeclared, a badge
   whose boldness upstream makes conditional reads `0/0`, the patch reads green,
   the banner still says Claude Code, and the menu reports the new name from the
-  manifest. So `badge` is required; `styled` and `welcome` are sentences
-  upstream may reword, which is the other row of the table.
+  manifest. So `badge` is required; `welcome` is a sentence upstream may
+  reword, which is the other row of the table.
 
 - **Count what the rewrite *achieved*, not that some rewrite happened.** A step
   built from many literal edits lands as soon as *one* of them applies, so an
@@ -1286,15 +1286,15 @@ menu too.
   (default `(patched)`; the menu's marker field names it; escaped for the
   template literal it lands in).
 - **`branding`** — rename visible `Claude Code` startup/help strings to a
-  chosen name. Three sub-steps, and the line between them and everything else
+  chosen name. Two sub-steps, and the line between them and everything else
   is the point: `badge` is a render whose **whole** bold content is the product
-  name, `styled` is the themed one-liner (`theme("claude",x)("Claude Code")`),
-  `welcome` is the `Welcome to Claude Code…` sentence. The bundle holds sixteen
-  exact `"Claude Code"` literals and many more inside prose — a notification
-  title, a native-host id, a fallback name, sentences that end up in system
-  prompts — and this patch renames the badge, not everything that mentions the
-  product. A rule of "every string containing the words" would be shorter and
-  wrong. Whichever JSX runtime the build emits is not mentioned: a props bag
+  name, `welcome` is the `Welcome to Claude Code…` sentence. Each build in the
+  corpus holds fourteen to twenty exact `"Claude Code"` literals and many more
+  inside prose — a notification title, a native-host id, a fallback name,
+  sentences that end up in system prompts — and this patch renames the badge,
+  not everything that mentions the product. A rule of "every string containing
+  the words" would be shorter and wrong.
+  Whichever JSX runtime the build emits is not mentioned: a props bag
   that *names* its children is the runtime that puts them there, and only a bag
   that names none leaves the content standing in the arguments after it. Which
   is not the same as reading both at once — the automatic runtime's third
@@ -1304,9 +1304,8 @@ menu too.
   *Whole* content, not "one of the children is the name": upstream already
   splits prose into JSX children whose first child is the bare product name
   (`["Claude Code","'","ll be able to read…"]`, twice), and bold is one prop
-  away from either. Everything the badge draws is the name or upstream's own
-  padding — which finds every badge on every build in the corpus: three sites
-  through 2.1.216, four from 2.1.217 (upstream added one), and the count is a
+  away from either. Everything the badge draws is the name — which finds every
+  badge on every build in the corpus: three sites, and the count is a
   measurement rather than a promise.
   `badge` is required; see [Expectations](#expectations--why-a-green-tick-means-something).
   On by default, deriving `<username>'s Code`; the menu's name field

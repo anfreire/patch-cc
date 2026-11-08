@@ -205,15 +205,9 @@ def _is_name(literal: js.Node) -> bool:
     The bundle renders plenty of bold prose that happens to contain the words
     -- "Claude Code successfully installed!", "No Claude Code sessions found" --
     and this patch renames the name badge, not everything that mentions the
-    product. The badge is the whole literal (upstream pads one of them with
-    spaces for its own layout); anything longer is a sentence.
+    product. The badge is the whole literal; anything longer is a sentence.
     """
-    return literal.type == "string" and js.text(literal)[1:-1].strip() == _BRAND
-
-
-def _blank(node: js.Node) -> bool:
-    """A string child that draws nothing -- upstream's own layout padding."""
-    return node.type == "string" and not js.text(node)[1:-1].strip()
+    return literal.type == "string" and js.text(literal)[1:-1] == _BRAND
 
 
 def _is_badge(call: js.Node, literal: js.Node) -> bool:
@@ -227,22 +221,14 @@ def _is_badge(call: js.Node, literal: js.Node) -> bool:
     would rename half a sentence -- and that sentence ends up in a system
     prompt, which is the one edit this patch must never make.
 
-    So the whole render has to be the name: this literal among what it draws,
-    and otherwise only upstream's own padding.
+    So the whole render has to be the name: this literal, and nothing beside it.
     """
     drawn = _rendered(call)
-    rest = [child for child in drawn if child.start_byte != literal.start_byte]
-    return _is_branded(call) and len(rest) < len(drawn) and all(map(_blank, rest))
-
-
-def _styled_brand(call: js.Node) -> bool:
-    """A call to the ``claude``-themed text helper: ``theme("claude",x)("...")``."""
-    callee = call.child_by_field_name("function")
-    if callee is None or callee.type != "call_expression":
-        return False
-    inner = callee.child_by_field_name("arguments")
-    first = inner.named_children[0] if inner and inner.named_children else None
-    return first is not None and first.type == "string" and js.text(first) == '"claude"'
+    return (
+        _is_branded(call)
+        and len(drawn) == 1
+        and drawn[0].start_byte == literal.start_byte
+    )
 
 
 def _branding(source: Source, options: Options, outcome: Outcome) -> Source:
@@ -270,11 +256,10 @@ def _branding(source: Source, options: Options, outcome: Outcome) -> Source:
     # rename nobody asked for -- with the manifest asserting the new name from the
     # manifest. Required, so a badge that stops being a bold render is loud
     # rather than a green tick over a binary that still says Claude Code. The
-    # other two are sentences upstream may reword or drop, and their absence is
+    # welcome line is a sentence upstream may reword or drop, and its absence is
     # a build lacking a shape, not a dead feature.
-    outcome.declare(required=("badge",), optional=("styled", "welcome"))
+    outcome.declare(required=("badge",), optional=("welcome",))
     badge = outcome.step("badge")
-    styled = outcome.step("styled")
     welcome = outcome.step("welcome")
 
     # A name that is *inside* prose, so each literal is asked what it says
@@ -283,12 +268,8 @@ def _branding(source: Source, options: Options, outcome: Outcome) -> Source:
     for literal in source.literals(_BRAND):
         # The startup/help name badge: the product name, drawn in bold.
         call = js.up(literal, "call_expression")
-        if call is not None and _is_name(literal):
-            if _is_badge(call, literal):
-                swap(badge, literal)
-            # The themed one-liner, whose helper is selected by the theme name.
-            elif _styled_brand(call):
-                swap(styled, literal)
+        if call is not None and _is_name(literal) and _is_badge(call, literal):
+            swap(badge, literal)
 
         # The welcome line, which is a bare sentence with no chrome to identify.
         if literal.type == "string" and js.text(literal)[1:-1].startswith(
