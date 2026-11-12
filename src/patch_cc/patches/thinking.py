@@ -29,7 +29,7 @@ how thinking is shown also owns how hard it is asked for.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
 from .. import js
 from ..custom_models import EFFORT_LADDER
@@ -82,10 +82,31 @@ def _absorbing(group: str, anchor: js.Node) -> Callable[[js.Node], bool]:
         return (
             consequence is not None
             and consequence.start_byte <= anchor.start_byte < consequence.end_byte
-            and _absorbed(consequence, group) is not None
+            and bool(_joins(consequence, group))
         )
 
     return want
+
+
+def _joins(arm: js.Node | None, group: str) -> list[js.Node]:
+    """Every ``<group>.messages.push(<entry>)`` this arm itself makes.
+
+    The list rather than the one, because two questions are asked of it and
+    only one of them needs to know which node is meant: the rewrite does
+    (:func:`_absorbed`), while *whether thinking is still grouped*
+    (:func:`grouped`) is answered by any push at all and must stay answerable
+    on a build where the rewrite would refuse to choose.
+    """
+    return js.every(
+        arm,
+        lambda n: (
+            n.type == "call_expression"
+            and js.reads(fn := n.child_by_field_name("function"), _PUSH)
+            and js.reads(list_ := js.receiver(fn), _MESSAGES)
+            and js.text(js.receiver(list_)) == group
+        ),
+        scoped=True,
+    )
 
 
 def _absorbed(arm: js.Node | None, group: str) -> js.Node | None:
@@ -109,18 +130,33 @@ def _absorbed(arm: js.Node | None, group: str) -> js.Node | None:
     character upstream owes nobody an announcement about -- would read as this
     arm having no absorb at all, and `group-routing` is required.
     """
-    return js.only(
-        js.every(
-            arm,
-            lambda n: (
-                n.type == "call_expression"
-                and js.reads(fn := n.child_by_field_name("function"), _PUSH)
-                and js.reads(list_ := js.receiver(fn), _MESSAGES)
-                and js.text(js.receiver(list_)) == group
-            ),
-            scoped=True,
-        ),
-        f"ways of absorbing an entry into {group}",
+    return js.only(_joins(arm, group), f"ways of absorbing an entry into {group}")
+
+
+def _accounted(source: Source) -> Iterator[tuple[js.Node, str]]:
+    """Every think-time accounting, with the open group as this build spells it.
+
+    What an arm adds think-time to is what it absorbs the entry into, so the
+    receiver of the accounting names the group for whoever asks next.
+    """
+    for node in source.find(_THINK_TIME):
+        accounted = js.up(node, "member_expression")
+        if accounted is not None and accounted.child_by_field_name("property") == node:
+            yield node, js.text(accounted.child_by_field_name("object"))
+
+
+def grouped(source: Source) -> bool:
+    """Does this bundle still swallow a thinking message into the activity group?
+
+    A fact about the bundle as it stands, asked by the same identity
+    `group-routing` rewrites: true on a build as upstream ships it, false once
+    that rewrite has landed -- and false, too, on a build whose arm no longer
+    reads this way, which is the answer that changes nothing for the asker
+    (`live-thinking`, docs/PLAYBOOK.md).
+    """
+    return any(
+        js.climb(node, _absorbing(group, node)) is not None
+        for node, group in _accounted(source)
     )
 
 
@@ -149,13 +185,7 @@ def _reroute_grouping(source: Source, outcome: Outcome) -> Source:
     edits: list[Edit] = []
     seen: set[int] = set()
 
-    for node in source.find(_THINK_TIME):
-        accounted = js.up(node, "member_expression")
-        if accounted is None or accounted.child_by_field_name("property") != node:
-            continue
-        # The open group, as this build spells it: what the arm adds think-time
-        # to is what it absorbs the entry into.
-        group = js.text(accounted.child_by_field_name("object"))
+    for node, group in _accounted(source):
         arm = js.climb(node, _absorbing(group, node))
         if arm is None or arm.id in seen:
             continue
