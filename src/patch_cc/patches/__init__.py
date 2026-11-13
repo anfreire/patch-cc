@@ -12,6 +12,11 @@ custom model is offered exactly when that model is really in the bundle -- so a
 ``custom-models`` that could not register it, dropped or left without its
 ``enum``, takes those pins down with it instead of leaving a definition pointing
 at a model nothing registered.
+
+``thinking`` runs before ``streaming`` for the same kind of reason.
+``live-thinking`` keys its live block by whether the bundle it is handed still
+draws thinking inside the activity group, which is exactly what
+``thinking-inline`` changes -- so it has to read the bundle that patch left.
 """
 
 from __future__ import annotations

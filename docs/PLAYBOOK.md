@@ -910,20 +910,53 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
     (`_switch_on` — the *delta* switch carries an arm of the same label, which
     would otherwise draw the update to itself), one call of that setter: open an entry
     `{index, contentBlock}` for this block, replacing one already open at the
-    index rather than appending twice. The block goes on the list exactly as
-    the API sent it, with **no id of ours**. The transcript's content renderer
-    is memoised, and a row it holds no live tool-use id for counts as static —
-    drawn once and never again, however the message behind it changes — so an
-    entry that opens with an empty block is drawn empty, and a stable id pins
-    that empty row for the whole turn (measured on 2.1.257: text arriving in
-    the store, screen unmoved). Without an id the renderer mints one per entry
-    *object*, so every replaced entry is a fresh row drawn with its full text:
-    upstream's own path for an id-less streamed block.
+    index rather than appending twice. Whether the block is given **an id of
+    ours** is the one thing here that depends on the bundle, because the id is
+    which row the block is: the renderer keys a virtual message off its
+    block's id and mints one per entry *object* for a block without, so an id
+    is one row for the block's whole life and no id is a fresh row per
+    replaced entry. Which of those still shows the text growing is decided by
+    where a thinking block is drawn, and the patch asks the bundle it is
+    handed (`thinking.grouped` — the identity `group-routing` rewrites, read
+    rather than edited):
+    - *In a row of its own* — `thinking-inline` landed. The transcript's
+      content renderer is memoised, and a row it holds no live tool-use id for
+      counts as static — drawn once and never again, however the message
+      behind it changes — so an entry that opens with an empty block is drawn
+      empty, and an id pins that empty row for the whole turn (measured on
+      2.1.257: text arriving in the store, screen unmoved). So **no id**:
+      every replaced entry is a fresh row drawn with its full text, upstream's
+      own path for an id-less streamed block.
+    - *Inside the activity group* — the bundle as upstream ships it. The
+      group's row is not static outside the transcript screen, so it redraws
+      either way; but its key is `collapsed-<its first message's uuid>`, and
+      that key is also what the conversation remembers a clicked-open row by.
+      A live block that opens the group with a fresh row per delta gives the
+      group a fresh key per delta, and a group the user clicked open folds
+      shut every time text arrives. So **an id**, a UUID minted at the block's
+      start and carried by every replacement (the delta spreads the block it
+      replaces): the row's key is the id's first 24 characters, where a UUID
+      keeps its randomness, and an id repeated from block to block would hand
+      the next one the key that was expanded last time.
+
+    Asked of the source and not of the selection, so the answer is the bundle
+    that ships: a `thinking-inline` dropped for drifting leaves the group
+    standing and the block keyed, and an arm that no longer reads as absorbing
+    answers *not grouped* — no id, which is a live block that still streams
+    and merely folds when clicked. Nothing else that reads a live entry's id
+    finds this one: the stabiliser and the landing both ask after `tool_use`
+    ids. Two costs, both read on 2.1.322. The key holds only while the block
+    streams — the landed message has a uuid of its own, so a group the live
+    block opened folds once when the block lands. And in the transcript
+    screen (`ctrl+o`) every row is static, the group's included, so a keyed
+    block stands there as it was drawn until the message lands, where an
+    id-less one was a fresh row per delta.
   - **`thinking-append`** inserts, at `case"thinking_delta":` in the switch on
     `.delta.type`, one call that replaces the entry at this index with a block
-    carrying the appended text — exactly how the twin's input accumulator
-    streams a tool call's JSON into its entry, and what makes the renderer mint
-    the replacement a fresh row. A delta without text (the API also sends
+    carrying the appended text and whatever else the block held — exactly how
+    the twin's input accumulator streams a tool call's JSON into its entry.
+    Whether the renderer makes the replacement a fresh row or redraws the same
+    one is the block's id to say (`thinking-start`). A delta without text (the API also sends
     token estimates under this event) or for an index with no open entry
     leaves the list as it was, so nothing is published and nothing redraws.
   - **`thinking-stop`** inserts, at `case"content_block_stop":` in the switch
@@ -931,7 +964,8 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
     The block's real message lands in the same instant as its stop event, and
     upstream clears the list only when the whole message ends: a tool-use
     entry is dropped by the stabiliser the moment the landed message carries
-    its id, but a thinking block carries none, so a live entry left standing
+    its id, but no landed message carries a thinking entry's, so a live entry
+    left standing
     would draw beside the landed block for as long as the answer streams. A
     tool-use entry at the same index is left exactly as the twin leaves it,
     and a list with nothing to drop is returned as it was.
@@ -970,8 +1004,9 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
   drops an entry only when its id has already landed as a message or repeats
   another's; an entry of ours passes through. The transcript's content
   renderer is memoised and treats a row without a live tool-use id as static,
-  drawn once — which is why a replaced entry has to become a fresh row (the
-  minted id) rather than a changed one. The interleaver appends the wrapped
+  drawn once — which is why, drawn in a row of its own, a replaced entry has
+  to become a fresh row (the minted id) rather than a changed one. The
+  interleaver appends the wrapped
   entries after the real messages in list order, so a thinking block streamed
   before a tool call draws above it. The reducer's own tool-use arm replaces
   entries by index and its input accumulator replaces an entry's block per
@@ -987,7 +1022,10 @@ for you. Each entry: what it changes, the stable anchor, and where it lives.
   block grow above the answer, then settle into the finished block when the
   message lands — no shimmer, no duplicate, no gap. It renders inline because
   `thinking-inline` routes thinking out of the collapsed activity group; with
-  only this patch selected the live block is drawn where that group draws.
+  only this patch selected the live block is drawn where that group draws —
+  click that group open while it streams and it stays open as the text grows,
+  folding once when the block lands. `doctor` composes every patch, so it only
+  ever bakes the id-less block; the keyed one is this check and no other.
   Diagnose an empty live block from a transcript, not by eye — the column of
   lengths under `thinking-summaries` is the same check.
 
