@@ -139,6 +139,7 @@ which is why the identity column is the hash (of the whole file,
 | `2.1.319` | 340 MB | `dabafec82ca1319fa43d8be36a10fc61b1d11821cb98ad5df04ad95e199b8eed` |
 | `2.1.321` | 342 MB | `426c33815ca6645a772f722fbff10dbf2cbdb124a8aeab733c1365dbf8bbf61f` |
 | `2.1.322` | 342 MB | `bfb3703ad5380242328459bc62ada4bde8ae7ba57c6e1eeadb9c00e08874c478` |
+| `2.1.323` | 362 MB | `604d29a6869409106b6a1110bdadcc8b72e8654a5a865d23258f938a696e348e` |
 
 This set starts at the 2.1.246 stream-store migration and covers the 2.1.247
 selector reads it was read back through, the 2.1.257 compiled transcript
