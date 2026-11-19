@@ -612,6 +612,10 @@ def _classic(source: Source, options: Options, outcome: Outcome) -> Source:
     return source
 
 
+def _read(node: js.Node | None, name: str) -> bool:
+    return js.reads(node, name) and not js.written(node)
+
+
 def _effort_limits(source: Source, options: Options, outcome: Outcome) -> Source:
     entries: list[str] = []
     for model in options.custom_models:
@@ -637,7 +641,7 @@ def _effort_limits(source: Source, options: Options, outcome: Outcome) -> Source
     reads = [
         node.parent
         for node in source.find(_CAPABILITIES)
-        if js.reads(node.parent, _CAPABILITIES) and not js.written(node.parent)
+        if _read(node.parent, _CAPABILITIES)
     ]
     read = js.only(reads, "per-model capability overrides")
     if read is None:
@@ -674,15 +678,30 @@ def _caps_per_model(source: Source) -> bool:
     )
 
 
+def _folds_layers(source: Source, loop: js.Node) -> bool:
+    element = loop.child_by_field_name("left")
+    body = loop.child_by_field_name("body")
+    return (
+        js.first(body, lambda n: _read(n, _MAX_EFFORT), scoped=True) is not None
+        and js.first(
+            body,
+            lambda n: (
+                _read(n, _MODEL_SETTINGS)
+                and any(value == element for value in source.values(js.receiver(n)))
+            ),
+            scoped=True,
+        )
+        is not None
+    )
+
+
 def _cap_layers(source: Source) -> js.Node | None:
     found: dict[int, js.Node] = {}
     for node in source.find(_MAX_EFFORT):
-        if not js.reads(node.parent, _MAX_EFFORT):
-            continue
-        body = js.body(js.up(node, *js.FUNCTIONS))
-        if js.first(body, lambda n: js.reads(n, _MODEL_SETTINGS), scoped=True) is None:
-            continue
-        for loop in js.every(body, js.of_type("for_in_statement"), scoped=True):
+        scope = js.body(js.up(node, *js.FUNCTIONS))
+        for loop in js.every(scope, js.of_type("for_in_statement"), scoped=True):
+            if not _folds_layers(source, loop):
+                continue
             for walked in source.values(loop.child_by_field_name("right")):
                 if walked.type == "array":
                     found[walked.id] = walked

@@ -99,7 +99,11 @@ The tree removes the *mechanical* fragility. It does not decide these:
   function does with its argument, is what says you found the right one. `model:`
   plus an array occurs 12 times; the Task tool's describe-string is what picks
   the one that matters. Weak identity is now the only way to match — or count —
-  the wrong node.
+  the wrong node. Names that merely share a scope are proximity, not
+  identity: tie the node you edit to the names by what actually connects
+  them — a binding the read goes through, an argument the function is handed
+  — or the next large function that mentions both offers a second one
+  ([`effort-cap`](#custom-models--custom_modelspy), 2.1.328).
 - **Narrow, not broad.** `branding` renames the product's *name badge*, and the
   bundle is full of bold prose that merely contains the words — including
   sentences that would end up in a system prompt. Rewriting "every string that
@@ -1222,12 +1226,23 @@ cap, so the declared top is baked as one more layer in that list rather than
 as a twin of the cut: the user's own lower cap still wins, `max` exempts, a
 model declaring no level keeps the control off rather than a cap, and the
 message a clamped pick gets — "set by your settings" — is then true.
-Identity: a member read of `maxEffortLevel` inside a function that also reads
-`modelSettings` in its own scope, and the list that function walks — what a
-`for ... of` in that scope walks, read through to the list literal it stands
-for, in place or named (`Source.values`). The settings
-normaliser reads the same pair of names but walks `Object.entries` of one
-settings object, no list of its own, so it claims nothing. Witness: the
+Identity: the list whose elements are the layers — what a `for ... of` walks
+when its body reads `modelSettings` off the element it binds and reads
+`maxEffortLevel` anywhere — read through to the list literal it stands for,
+in place or named (`Source.values`). Only `modelSettings` is tied to the
+element: the cap the baked layer feeds is read off an entry of it, and the
+one read off the element is the layer-wide fallback, which that layer never
+sets. Reads, not writes: a loop that only initialises the two names walks no
+layers. Any weaker tie admits the gateway settings linter 2.1.328 added: it
+reads both names in a function that also walks a provider table and a `?? []`
+fallback (a claim on the function took all three for layer lists), and both
+inside a loop of its own, but off its element's `payload.settings` rather than
+the element. The settings normaliser walks the entries of one settings object.
+Neither walks layers, so neither claims anything. The per-model read's own
+spelling is past what the tree can tie: `values` does not follow a
+`for ... of` binding into the entries it destructures, so a renamed per-model
+cap still finds the list and only the `/effort` picker shows the loss.
+Witness: the
 settings schema's own `modelSettings` entry carrying `maxEffortLevel`;
 2.1.257's carries only `effortLevel`, so the step reports absent there.
 
