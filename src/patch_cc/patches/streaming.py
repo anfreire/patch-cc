@@ -29,12 +29,13 @@ chooses it from.
 Two facts about upstream's list are relied on, both measured on the corpus.
 The renderer keys a virtual message off its block's ``id`` when the block has
 one and mints a fresh one per entry *object* otherwise, and the row it draws
-is memoised as static for anything but a live tool use -- so the block carries
-no id of ours, and a replaced entry, being a new object, is a fresh row drawn
-with its full text (:func:`_block_start`). And the transcript re-renders when
-an entry's ``contentBlock`` changes identity, which a replaced block does --
-the same way the twin's own input accumulator replaces a tool-use entry as its
-JSON streams in.
+is memoised as static for anything but a live tool use -- so whether the block
+carries an id is whether it is one row for its whole life or a fresh row per
+replaced entry, and which of the two still draws the text as it grows depends
+on where this bundle draws a thinking block (:func:`_block_start`). And the
+transcript re-renders when an entry's ``contentBlock`` changes identity, which
+a replaced block does -- the same way the twin's own input accumulator replaces
+a tool-use entry as its JSON streams in.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ from collections.abc import Callable
 from .. import js
 from ..js import Edit, Source
 from .base import GROUP_OUTPUT, Options, Outcome, Patch
+from .thinking import grouped
 
 # --------------------------------------------------------- summaries setting
 
@@ -114,7 +116,7 @@ _TOOL_USES = "onStreamingToolUses"
 _SETTER = "__cc_onStreamingToolUses"
 
 
-def _block_start(event: str, setter: str) -> str:
+def _block_start(event: str, setter: str, keyed: bool) -> str:
     """Open a live entry for a thinking block, in the twin's own shape.
 
     ``{index, contentBlock}`` is what the tool-use arm pushes and what every
@@ -126,21 +128,45 @@ def _block_start(event: str, setter: str) -> str:
     An entry already open at this index is replaced in place, as the twin
     replaces one, rather than appended twice.
 
-    The block is taken exactly as the API sent it, with no id of ours. The
-    transcript's content renderer is memoised, and a row it holds no live
-    tool-use id for counts as *static*: drawn once and never again, however
-    the message behind it changes. An entry that opens with an empty block is
-    therefore drawn empty, and a stable id would pin that empty row for the
-    whole turn -- measured on 2.1.257, where the text arrived and the screen
-    never moved. Without an id the renderer mints one per entry *object*, so
-    every replaced entry is a fresh row drawn with its full text: upstream's
-    own path for an id-less streamed block, and the reason a replacement per
-    delta is the right update rather than a mutation.
+    ``keyed`` is whether the block is given an id, and so which row it is. The
+    renderer keys a virtual message off its block's id, and mints one per entry
+    *object* for a block without: an id is one row for the block's whole life,
+    no id is a fresh row for every replaced entry. Which of those still shows
+    the text growing is decided by where this bundle draws a thinking block:
+
+    * **In a row of its own** (thinking routed out of the activity group). The
+      transcript's content renderer is memoised, and a row it holds no live
+      tool-use id for counts as *static*: drawn once and never again, however
+      the message behind it changes. An entry that opens with an empty block
+      is therefore drawn empty, and an id would pin that empty row for the
+      whole turn -- measured on 2.1.257, where the text arrived and the screen
+      never moved. So no id: every replaced entry is a fresh row drawn with its
+      full text, upstream's own path for an id-less streamed block.
+    * **Inside the activity group** (a bundle that still swallows thinking).
+      The group's row is not static outside the transcript screen, so it
+      redraws either way -- but it is keyed off its first message, and that
+      key is also what the conversation remembers a clicked-open row by. A
+      live block that opens the group with a fresh row per delta gives the
+      group a fresh key per delta, and a group the user expanded folds shut
+      again every time text arrives. So an id: the key holds for as long as
+      the block streams.
+
+    The id is minted here once and rides every later replacement, because
+    :func:`_delta` spreads the block it replaces. It is a UUID for what the
+    renderer makes of it: the row's key is the id's first 24 characters, which
+    is where a UUID keeps its randomness, and an id repeated from one block to
+    the next would hand the next block the key the user expanded last time.
+    Everything else that reads a live entry's id is asking after a tool use --
+    the stabiliser against ids that have landed, the landing itself against
+    the message's ``tool_use`` blocks -- and finds no such id here.
     """
+    block = f"{event}.event.content_block"
+    if keyed:
+        block = f"{{...{block},id:globalThis.crypto.randomUUID()}}"
     return (
         f"{setter}?.((__cc_entries)=>{{"
         f"let __cc_index={event}.event.index,"
-        f"__cc_entry={{index:__cc_index,contentBlock:{event}.event.content_block}},"
+        f"__cc_entry={{index:__cc_index,contentBlock:{block}}},"
         f"__cc_at=__cc_entries.findIndex((__cc_seen)=>__cc_seen.index===__cc_index);"
         f"return __cc_at===-1?[...__cc_entries,__cc_entry]"
         f":__cc_entries.with(__cc_at,__cc_entry)}})"
@@ -150,9 +176,10 @@ def _block_start(event: str, setter: str) -> str:
 def _delta(event: str, setter: str) -> str:
     """Grow the live entry's text by one thinking delta.
 
-    The entry is replaced with a fresh block carrying the appended text --
-    exactly how the twin's input accumulator streams a tool call's JSON into
-    its entry, and what makes the renderer mint the replacement a fresh row
+    The entry is replaced with a fresh block carrying the appended text and
+    whatever else the block held -- exactly how the twin's input accumulator
+    streams a tool call's JSON into its entry. What the renderer makes of the
+    replacement, a fresh row or the same one redrawn, is the block's id to say
     (:func:`_block_start`). A delta with no text -- the API also sends token
     estimates under this event -- and a delta for an index with no open entry
     both leave the list as it was, so nothing is published and nothing
@@ -175,8 +202,8 @@ def _stop(event: str, setter: str) -> str:
     The block's real message lands in the same instant as its stop event, and
     the list is only cleared by upstream when the whole message ends -- for a
     tool use the stabiliser drops the entry the moment the landed message
-    carries its id, but a thinking block carries none, so a live entry left
-    standing would draw beside the landed block for as long as the answer
+    carries its id, but no landed message carries a thinking entry's, so a
+    live entry left standing would draw beside the landed block for as long as the answer
     streams. Dropped here, the live row hands over to the real one in one
     frame. Only a thinking entry at this index goes: a tool-use entry stops
     too, and upstream keeps that one until its message lands, so it is left
@@ -386,7 +413,13 @@ def _step_reducer(source: Source, outcome: Outcome) -> Source:
     element or trailing comma there would make an append a SyntaxError no write
     verifier could see), the entry opened where the reducer dispatches a
     thinking block's start, the text appended where it dispatches a thinking
-    delta, and the entry dropped where it dispatches the block's stop. Each
+    delta, and the entry dropped where it dispatches the block's stop. The
+    entry is opened with an id exactly when this bundle still draws thinking
+    inside the activity group (:func:`patch_cc.patches.thinking.grouped`,
+    :func:`_block_start`) -- asked of the source this patch is handed, so it is
+    answered by what the patches before it left there and not by which of them
+    were selected: a `thinking-inline` that was dropped for drifting leaves the
+    group standing, and the block is keyed for the bundle that ships. Each
     dispatch point is its own required step, so a build that folds an arm away
     reads as that point's absence by name; and every step here answers for its
     own identity alone -- nothing is discovered in one step for another to
@@ -406,7 +439,7 @@ def _step_reducer(source: Source, outcome: Outcome) -> Source:
     edits += _dispatch(
         handler,
         _THINKING_TYPES,
-        _block_start(event, _SETTER),
+        _block_start(event, _SETTER, grouped(source)),
         outcome.step("thinking-start"),
         on="content_block",
     )
